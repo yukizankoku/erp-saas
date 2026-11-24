@@ -174,6 +174,8 @@ Pengembangan dikerjakan oleh **tim AI agent (Claude Code di cloud)** secara otom
 
 - **Platform:** Claude Code di cloud (claude.ai/code), dipicu oleh *scheduled task*.
 - **Setiap run = sesi baru.** Konteks bersih → hemat token. "Ingatan" proyek disimpan di repo (`.agent/`) dan GitHub Issues, bukan di percakapan.
+  *Catatan implementasi (ADR 0003):* karena sesi baru di environment Default tidak mendapat akses tulis GitHub, untuk sementara
+  semua run dikirim ke satu sesi runner persisten; aturan "abaikan riwayat percakapan, pakai STATE.md" menjaga kebersihan konteks.
 - **Primary agent = PM Agent:** merencanakan, membagi tugas ke sub-agent, mengintegrasikan hasil, melapor ke PO.
 - **Sub-agent** didefinisikan di `.claude/agents/*.md` (peran, alat yang boleh dipakai, tier model).
 
