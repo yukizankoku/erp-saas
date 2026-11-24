@@ -6,9 +6,9 @@
 
 | Atribut | Nilai |
 |---|---|
-| Versi dokumen | 0.1 — Draft untuk review |
+| Versi dokumen | 0.2 — Disetujui PO |
 | Tanggal | 24 November 2026 |
-| Status | Menunggu review Product Owner (PO) |
+| Status | Disetujui Product Owner (PO) pada 24 November 2026 — perubahan berikutnya lewat PR (gerbang §5.8 #7) |
 | Product Owner | Pemilik repository |
 | Penyusun | PM Agent |
 | Kode proyek | `erp-saas` |
@@ -42,7 +42,7 @@
 13. Roadmap & Fase
 14. Metrik Keberhasilan
 15. Risiko & Mitigasi
-16. Keputusan Terbuka (butuh jawaban PO)
+16. Keputusan Produk & Teknis
 17. Glosarium
 - Lampiran A — Struktur Repository
 - Lampiran B — Template Laporan Harian
@@ -222,7 +222,7 @@ blocked_window:           # jam kerja PO — agent dilarang bekerja
   start: "09:00"
   end: "18:00"
 hard_stop_weekday: "08:30"
-work_on_public_holidays: false
+work_on_public_holidays: true
 public_holidays: []       # mis. ["2026-12-25"]
 max_tasks_per_run: 3
 max_parallel_subagents: 2
@@ -374,20 +374,20 @@ desain UI tersedia (bila ada UI).
 
 | Lapisan | Pilihan | Status |
 |---|---|---|
-| Backend | Python 3.12+, FastAPI, Pydantic v2, pola MVC modular | Python & MVC: **ditetapkan**; FastAPI: rekomendasi |
+| Backend | Python 3.12+, FastAPI, Pydantic v2, pola MVC modular | **Ditetapkan** |
 | ORM & migrasi | SQLAlchemy 2.x (async, asyncpg) + Alembic | **Ditetapkan** |
 | Database | PostgreSQL — NeonDB (fase awal) → PostgreSQL di VPS | **Ditetapkan** |
-| Manajemen paket | uv (Python), pnpm workspaces (TypeScript) | Rekomendasi |
-| Web | React + TypeScript + Vite sebagai PWA; TanStack Router & Query; Tailwind CSS + komponen berbasis Radix (shadcn/ui) | Rekomendasi — **butuh konfirmasi** |
-| Offline web | IndexedDB (Dexie) + Service Worker | Rekomendasi |
-| Mobile | React Native (Expo) + SQLite | Rekomendasi — **butuh konfirmasi** |
-| Kode TS bersama | `packages/api-client` (generate dari OpenAPI), `ui`, `i18n`, `sync` | Rekomendasi |
-| Grafik | Apache ECharts (lazy-load) | Rekomendasi |
-| Excel | openpyxl (template & baca), XlsxWriter / mode write-only (export cepat) | Rekomendasi |
+| Manajemen paket | uv (Python), pnpm workspaces (TypeScript) | **Ditetapkan** |
+| Web | React + TypeScript + Vite sebagai PWA; TanStack Router & Query; Tailwind CSS + komponen berbasis Radix (shadcn/ui) | **Ditetapkan** |
+| Offline web | IndexedDB (Dexie) + Service Worker | **Ditetapkan** |
+| Mobile | React Native (Expo) + SQLite | **Ditetapkan** |
+| Kode TS bersama | `packages/api-client` (generate dari OpenAPI), `ui`, `i18n`, `sync` | **Ditetapkan** |
+| Grafik | Apache ECharts (lazy-load) | **Ditetapkan** |
+| Excel | openpyxl (template & baca), XlsxWriter / mode write-only (export cepat) | **Ditetapkan** |
 | Hosting fase awal | Vercel: web statis + fungsi Python, satu domain (`/api/*` → backend) | **Ditetapkan** |
-| Hosting fase lanjut | VPS + Docker Compose (reverse proxy, app, worker, Redis, PostgreSQL) | VPS **ditetapkan**; detail: rekomendasi |
-| CI/CD | GitHub Actions; preview deploy Vercel per PR; branch database Neon per PR | Rekomendasi |
-| Observability | Sentry (atau setara) + log terstruktur | Rekomendasi |
+| Hosting fase lanjut | VPS + Docker Compose (reverse proxy, app, worker, Redis, PostgreSQL) | **Ditetapkan** |
+| CI/CD | GitHub Actions; preview deploy Vercel per PR; branch database Neon per PR | **Ditetapkan** |
+| Observability | Sentry (atau setara) + log terstruktur | **Ditetapkan** |
 
 **Alasan pilihan:**
 
@@ -550,7 +550,7 @@ Angka limit penyedia sering berubah; DevOps Agent wajib memeriksa limit terbaru 
 
 | Hal | Dampak | Mitigasi |
 |---|---|---|
-| **Vercel Hobby hanya untuk penggunaan pribadi/non-komersial** | Melayani trial user eksternal untuk produk komersial berisiko melanggar ketentuan | Hobby untuk dev & demo internal; upgrade Vercel Pro atau percepat VPS sebelum trial user eksternal (Keputusan Terbuka #4) |
+| **Vercel Hobby hanya untuk penggunaan pribadi/non-komersial** | Melayani trial user eksternal untuk produk komersial berisiko melanggar ketentuan | Hobby untuk dev & demo internal; upgrade Vercel Pro atau percepat VPS sebelum trial user eksternal (Keputusan #4) |
 | Batas durasi eksekusi & ukuran body request fungsi serverless | Import/export besar, laporan berat, upload file | Proses bertahap (chunk), upload file langsung ke object storage via presigned URL, batas baris per paket |
 | Tidak ada WebSocket & worker permanen di Vercel | Chat realtime, job latar belakang | Port `Realtime` & `JobQueue` (§6.5) |
 | Filesystem Vercel bersifat sementara | Lampiran tidak bisa disimpan lokal | Object storage |
@@ -1261,7 +1261,7 @@ Setiap tenant dapat mengekspor seluruh datanya.
 ## 13. Roadmap & Fase
 
 Durasi tiap fase ditetapkan PM setelah 2 minggu pertama berdasarkan kecepatan aktual tim agent. Urutan Fase 3–7 dapat diubah
-sesuai segmen pasar pertama (Keputusan Terbuka #8). **Rilis trial publik pertama = akhir Fase 2.**
+sesuai segmen pasar pertama (Keputusan #8: Distribusi/Retail). **Rilis trial publik pertama = akhir Fase 2.**
 
 | Fase | Nama | Isi utama | Kriteria selesai |
 |---|---|---|---|
@@ -1319,22 +1319,25 @@ tidak tertangani free tier, atau ketentuan Vercel Hobby (penggunaan komersial).
 
 ---
 
-## 16. Keputusan Terbuka (butuh jawaban PO)
+## 16. Keputusan Produk & Teknis
 
-| # | Pertanyaan | Rekomendasi | Dibutuhkan sebelum |
+Seluruh rekomendasi pada draft v0.1 **disetujui PO pada 24 November 2026**. Keputusan di bawah mengikat agent;
+perubahan hanya melalui PR ke dokumen ini dengan persetujuan PO.
+
+| # | Topik | Keputusan | Berlaku |
 |---|---|---|---|
-| 1 | Nama aplikasi | Tetap placeholder `[APP_NAME]` sampai diputuskan | Rilis trial publik |
-| 2 | Framework frontend web | React + TypeScript + Vite (PWA) — cocok untuk offline & UI kaya; backend tetap MVC Python | Fase 0 selesai |
-| 3 | Teknologi mobile | React Native (Expo) — berbagi kode TS dengan web | Fase 3 |
-| 4 | Paket Vercel saat ada trial user eksternal | Vercel Pro, atau percepat migrasi VPS | Rilis trial publik |
-| 5 | Saluran laporan harian | GitHub Issue + notifikasi push | Fase 0 |
-| 6 | Wewenang agent merge ke `develop` | Ya, dengan syarat §5.8 | Fase 0 |
-| 7 | Visibilitas repository | Private (kode produk komersial); konsekuensi: kuota menit GitHub Actions terbatas | Fase 0 |
-| 8 | Segmen pasar pertama | Menentukan urutan Fase 3–7 (mis. distribusi/retail → POS & gudang lebih dulu) | Fase 2 selesai |
-| 9 | Durasi & batas free trial | 14 hari, batas sesuai §12 | Rilis trial publik |
-| 10 | Agent bekerja penuh di hari libur nasional? | Ya (opsional, via `control.yaml`) | Fase 0 |
-| 11 | Lisensi produk & kebijakan lisensi dependensi | Proprietary; hindari dependensi GPL/AGPL | Fase 0 |
-| 12 | Penyedia realtime/email/storage di fase awal | Dipilih DevOps berdasarkan free tier terbaru, disetujui PO (gerbang #5) | Fase 1 |
+| 1 | Nama aplikasi | Tetap placeholder `[APP_NAME]` sampai PO menetapkan nama final (wajib sebelum rilis trial publik) | Sekarang |
+| 2 | Framework frontend web | React + TypeScript + Vite sebagai PWA; backend tetap MVC Python | Fase 0 |
+| 3 | Teknologi mobile | React Native (Expo) + SQLite, berbagi kode TS dengan web | Fase 3 |
+| 4 | Hosting saat ada trial user eksternal | Vercel Pro **atau** percepat migrasi VPS. Pilihan final + biayanya diajukan PM sebagai gerbang biaya (§5.8 #2) menjelang rilis trial publik | Sebelum trial publik |
+| 5 | Saluran laporan harian | GitHub Issue berlabel `daily-report` + notifikasi push | Fase 0 |
+| 6 | Wewenang agent merge ke `develop` | Diizinkan, dengan syarat §5.8 | Fase 0 |
+| 7 | Visibilitas repository | Private | Sekarang |
+| 8 | Segmen pasar pertama | Distribusi/Retail — POS & gudang diprioritaskan; urutan Fase 3–7 tetap seperti §13 kecuali PO mengubahnya | Fase 2 |
+| 9 | Free trial | 14 hari, batas sesuai §12 | Rilis trial publik |
+| 10 | Hari libur nasional | Agent boleh bekerja seharian; daftar libur diisi di `.agent/control.yaml` (`work_on_public_holidays: true`) | Fase 0 |
+| 11 | Lisensi | Produk proprietary; dependensi GPL/AGPL dilarang tanpa persetujuan PO | Sekarang |
+| 12 | Penyedia realtime/email/storage fase awal | Dipilih DevOps Agent berdasarkan free tier terbaru; tiap penyedia yang menerima data pelanggan tetap butuh persetujuan PO (§5.8 #5) | Fase 1 |
 
 ---
 
@@ -1442,3 +1445,4 @@ Sub-agent dipanggil: Backend ×4, QA ×3, Security ×1 · Mode: active
 | Versi | Tanggal | Perubahan | Oleh |
 |---|---|---|---|
 | 0.1 | 2026-11-24 | Draft awal | PM Agent |
+| 0.2 | 2026-11-24 | Semua rekomendasi disetujui PO; §16 menjadi daftar keputusan; status stack menjadi "Ditetapkan" | PM Agent |
