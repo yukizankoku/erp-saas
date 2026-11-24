@@ -1,0 +1,106 @@
+name: neon-smoke
+
+# Uji ujung-ke-ujung terhadap Neon (PRD §6.9, issue #24): branch Neon sementara dari `production`
+# → migrasi Alembic (koneksi direct) → start API → GET /api/v1/health/db (koneksi pooled) → hapus branch.
+# Butuh secret repo NEON_API_KEY; tanpa secret, job dilewati (tidak gagal).
+
+on:
+  pull_request:
+    paths:
+      - "backend/migrations/**"
+      - "backend/app/core/db.py"
+      - "backend/app/core/config.py"
+      - "backend/pyproject.toml"
+      - "neon.ts"
+      - ".github/workflows/neon-smoke.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: neon-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID || 'withered-waterfall-79816375' }}
+      NEON_BRANCH: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      DO_NOT_TRACK: "1"
+      DATABASE_POOL_SIZE: "0"
+      ENVIRONMENT: test
+    steps:
+      - name: Cek secret NEON_API_KEY
+        id: gate
+        run: |
+          if [ -z "$NEON_API_KEY" ]; then
+            echo "::notice::NEON_API_KEY belum diatur — neon-smoke dilewati."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.run == 'true'
+      - uses: astral-sh/setup-uv@v6
+        if: steps.gate.outputs.run == 'true'
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.run == 'true'
+        with:
+          node-version: 22
+      - name: Pasang Neon CLI
+        if: steps.gate.outputs.run == 'true'
+        run: npm i -g neon@9
+
+      - name: Buat branch Neon sementara
+        id: branch
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          expires=$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)
+          neon branches create --project-id "$NEON_PROJECT_ID" --name "$NEON_BRANCH" \
+            --parent production --expires-at "$expires" -o json > /dev/null
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          pooled=$(neon connection-string "$NEON_BRANCH" --project-id "$NEON_PROJECT_ID" --pooled)
+          direct=$(neon connection-string "$NEON_BRANCH" --project-id "$NEON_PROJECT_ID")
+          for url in "$pooled" "$direct"; do
+            echo "::add-mask::$url"
+            echo "::add-mask::$(python3 -c 'import sys,urllib.parse as u; print(u.urlsplit(sys.argv[1]).password or "")' "$url")"
+          done
+          echo "DATABASE_URL=$pooled" >> "$GITHUB_ENV"
+          echo "DATABASE_URL_UNPOOLED=$direct" >> "$GITHUB_ENV"
+
+      - name: Migrasi (direct) — upgrade, downgrade, upgrade
+        if: steps.gate.outputs.run == 'true'
+        working-directory: backend
+        run: |
+          uv sync --locked
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
+      - name: Start API & uji /api/v1/health/db (pooled)
+        if: steps.gate.outputs.run == 'true'
+        working-directory: backend
+        run: |
+          uv run uvicorn app.main:app --port 8000 > /tmp/uvicorn.log 2>&1 &
+          for i in $(seq 1 40); do curl -sf http://127.0.0.1:8000/api/v1/health > /dev/null && break; sleep 0.5; done
+          body=$(curl -s -w ' HTTP %{http_code}' http://127.0.0.1:8000/api/v1/health/db)
+          echo "GET /api/v1/health/db → $body"
+          echo "$body" | grep -q '"status":"ok"' || { cat /tmp/uvicorn.log; exit 1; }
+
+      - name: Test backend terhadap Neon
+        if: steps.gate.outputs.run == 'true'
+        working-directory: backend
+        run: uv run pytest -q tests/test_health.py
+
+      - name: Hapus branch Neon sementara
+        if: always() && steps.branch.outputs.created == 'true'
+        run: neon branches delete "$NEON_BRANCH" --project-id "$NEON_PROJECT_ID" > /dev/null
