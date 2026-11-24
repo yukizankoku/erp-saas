@@ -96,6 +96,25 @@ jobs:
           echo "GET /api/v1/health/db → $body"
           echo "$body" | grep -q '"status":"ok"' || { cat /tmp/uvicorn.log; exit 1; }
 
+      - name: Cek atribut role runtime (RLS tidak berlaku untuk superuser/BYPASSRLS — ADR 0004)
+        if: steps.gate.outputs.run == 'true'
+        working-directory: backend
+        run: |
+          uv run python - <<'PY'
+          import asyncio
+          from sqlalchemy import text
+          from app.core.db import get_engine
+          async def main() -> None:
+              async with get_engine().connect() as conn:
+                  row = (await conn.execute(text(
+                      "SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"
+                  ))).one()
+              print(f"role={row[0]} superuser={row[1]} bypassrls={row[2]}")
+              if row[1] or row[2]:
+                  print("::warning::Role koneksi aplikasi melewati RLS — siapkan role app_runtime (docs/runbooks/db-roles.md)")
+          asyncio.run(main())
+          PY
+
       - name: Test backend terhadap Neon
         if: steps.gate.outputs.run == 'true'
         working-directory: backend
