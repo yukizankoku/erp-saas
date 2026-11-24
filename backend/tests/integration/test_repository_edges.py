@@ -1,8 +1,10 @@
 """Celah tambahan QA untuk P1-01 (ADR 0004 §8): batas isolasi repository & siklus RLS up/down."""
 
+from typing import Any
 from uuid import UUID
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -10,11 +12,20 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.core.ids import uuid7
 from app.core.tenancy.context import tenant_context
 from app.core.tenancy.rls import drop_tenant_rls_sql, tenant_rls_sql
-from app.framework.errors import RecordError, RecordNotFound
+from app.framework.errors import RecordConflict, RecordNotFound
+from app.main import create_app
 from tests.integration.models import Item, ItemRepository
 from tests.integration.test_rls_meta import audit_tenant_tables
 
 SessionFactory = async_sessionmaker[AsyncSession]
+
+
+async def _admin_rows(admin: AsyncEngine, row_id: UUID) -> list[dict[str, Any]]:
+    async with admin.connect() as conn:
+        result = await conn.execute(
+            text("SELECT * FROM rls_test_items WHERE id = :id"), {"id": row_id}
+        )
+        return [dict(row) for row in result.mappings()]
 
 
 async def _create(factory: SessionFactory, tenant: UUID, **values: object) -> Item:
@@ -76,34 +87,100 @@ async def test_soft_deleted_record_cannot_be_updated_or_deleted_again(
     assert tuple(row) == ("item", 2)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=IntegrityError,
-    reason=(
-        "Bug P1-01: id dari klien (offline) yang sudah dipakai tenant lain menembus ke "
-        "IntegrityError mentah (HTTP 500). Seharusnya RecordError 4xx (409) tanpa membocorkan "
-        "keberadaan baris tenant lain."
-    ),
-)
 async def test_create_with_id_owned_by_other_tenant_raises_domain_error(
-    session_factory: SessionFactory,
+    session_factory: SessionFactory, admin_engine: AsyncEngine
 ) -> None:
+    """Id dari klien (offline) yang sudah dipakai tenant lain → 409 tanpa membocorkan baris itu."""
     shared_id = uuid7()
-    await _create(session_factory, uuid7(), id=shared_id)
+    owner = await _create(session_factory, uuid7(), id=shared_id)
     async with session_factory() as session:
-        with tenant_context(uuid7()), pytest.raises(RecordError) as exc:
+        with tenant_context(uuid7()), pytest.raises(RecordConflict) as exc:
             await ItemRepository(session).create({"id": shared_id, "name": "clash"})
-    assert 400 <= exc.value.status_code < 500
+        assert not session.in_transaction()  # sudah di-rollback; sesi siap dipakai lagi
+    assert (exc.value.status_code, exc.value.code) == (409, "record.conflict")
+    assert "clash" not in str(exc.value) and str(shared_id) not in str(exc.value)
+    row = (await _admin_rows(admin_engine, shared_id))[0]
+    assert (row["tenant_id"], row["name"]) == (owner.tenant_id, "item")
 
 
 async def test_create_with_duplicate_id_same_tenant_is_rejected(
-    session_factory: SessionFactory,
+    session_factory: SessionFactory, admin_engine: AsyncEngine
 ) -> None:
     tenant, dup = uuid7(), uuid7()
     await _create(session_factory, tenant, id=dup)
     async with session_factory() as session:
-        with tenant_context(tenant), pytest.raises(IntegrityError):
-            await ItemRepository(session).create({"id": dup, "name": "again"})
+        with tenant_context(tenant):
+            with pytest.raises(RecordConflict) as exc:
+                await ItemRepository(session).create({"id": dup, "name": "again"})
+            assert (exc.value.status_code, exc.value.code) == (409, "record.conflict")
+            # Sesi sudah di-rollback: transaksi berikutnya langsung dapat dipakai.
+            again = await ItemRepository(session).create({"name": "next"})
+            await session.commit()
+    assert [r["name"] for r in await _admin_rows(admin_engine, dup)] == ["item"]
+    assert [r["name"] for r in await _admin_rows(admin_engine, again.id)] == ["next"]
+
+
+async def test_create_conflict_inside_savepoint_keeps_outer_transaction(
+    session_factory: SessionFactory, admin_engine: AsyncEngine
+) -> None:
+    tenant, dup = uuid7(), uuid7()
+    await _create(session_factory, tenant, id=dup)
+    async with session_factory() as session:
+        repo = ItemRepository(session)
+        with tenant_context(tenant):
+            outer = await repo.create({"name": "outer"})
+            with pytest.raises(RecordConflict):
+                async with session.begin_nested():  # hanya savepoint ini yang batal
+                    await repo.create({"id": dup, "name": "dup"})
+            assert await repo.get(outer.id) is not None
+            await session.commit()
+    assert [r["name"] for r in await _admin_rows(admin_engine, outer.id)] == ["outer"]
+
+
+async def test_create_with_other_unique_violation_is_not_reported_as_id_conflict(
+    session_factory: SessionFactory,
+) -> None:
+    tenant = uuid7()
+    await _create(session_factory, tenant, code="SAME")
+    async with session_factory() as session:
+        with tenant_context(tenant), pytest.raises(IntegrityError) as exc:
+            await ItemRepository(session).create({"name": "x", "code": "SAME"})
+    assert "uq_rls_test_items_tenant_id_code" in str(exc.value)
+
+
+async def test_id_conflict_http_response_is_identical_for_own_and_foreign_ids(
+    session_factory: SessionFactory,
+) -> None:
+    tenant = uuid7()
+    own = await _create(session_factory, tenant)
+    foreign = await _create(session_factory, uuid7())
+    app = create_app()
+
+    @app.post("/_test/items/{item_id}")
+    async def create_item(item_id: UUID) -> dict[str, str]:
+        with tenant_context(tenant):
+            async with session_factory() as session:
+                record = await ItemRepository(session).create({"id": item_id, "name": "post"})
+                await session.commit()
+                return {"id": str(record.id)}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        responses = {
+            name: [
+                await client.post(f"/_test/items/{item_id}", headers={"Accept-Language": lang})
+                for lang in ("id", "en")
+            ]
+            for name, item_id in (("own", own.id), ("foreign", foreign.id))
+        }
+        created = await client.post(f"/_test/items/{uuid7()}")
+
+    assert created.status_code == 200
+    for own_response, foreign_response in zip(responses["own"], responses["foreign"], strict=True):
+        assert own_response.status_code == foreign_response.status_code == 409
+        assert own_response.headers["content-type"] == "application/problem+json"
+        assert own_response.json() == foreign_response.json()
+        assert own_response.json()["code"] == "record.conflict"
+    assert responses["own"][0].json()["title"] != responses["own"][1].json()["title"]  # id vs en
 
 
 async def test_rls_helpers_upgrade_downgrade_roundtrip(admin_engine: AsyncEngine) -> None:

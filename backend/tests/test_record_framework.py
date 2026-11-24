@@ -11,7 +11,12 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from app.core.ids import uuid7
 from app.core.tenancy.context import TenantContextMissing, tenant_context
-from app.framework.errors import RecordNotFound, VersionConflict, preferred_language
+from app.framework.errors import (
+    RecordConflict,
+    RecordNotFound,
+    VersionConflict,
+    preferred_language,
+)
 from app.framework.record import SYSTEM_COLUMNS, BaseRecord
 from app.framework.repository import MAX_PAGE_SIZE, TenantRepository
 from app.main import create_app
@@ -134,6 +139,7 @@ def test_preferred_language(header: str | None, expected: str) -> None:
     [
         (VersionConflict(), 409, "record.version_conflict"),
         (RecordNotFound(), 404, "record.not_found"),
+        (RecordConflict(), 409, "record.conflict"),
     ],
 )
 @pytest.mark.parametrize("lang", ["id", "en"])

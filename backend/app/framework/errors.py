@@ -28,6 +28,19 @@ _MESSAGES: dict[str, dict[str, tuple[str, str]]] = {
             "The record was changed by someone else. Reload it and try again.",
         ),
     },
+    "record.conflict": {
+        # Sengaja generik: id yang sama milik tenant sendiri maupun tenant lain → pesan identik.
+        "id": (
+            "ID data sudah dipakai",
+            "ID data ini sudah digunakan. Periksa apakah data sudah tersimpan, "
+            "atau buat dengan ID baru.",
+        ),
+        "en": (
+            "Record ID already in use",
+            "This record ID is already in use. Check whether it was already saved, "
+            "or create it with a new ID.",
+        ),
+    },
 }
 
 
@@ -47,6 +60,17 @@ class VersionConflict(RecordError):
     """`expected_version` (If-Match) tidak cocok, atau record berubah bersamaan saat flush."""
 
     code = "record.version_conflict"
+    status_code = 409
+
+
+class RecordConflict(RecordError):
+    """`id` record baru sudah dipakai — oleh tenant sendiri **atau** tenant lain (PK global).
+
+    Kedua kasus sengaja identik (kode, status, pesan) agar keberadaan baris tenant lain tidak
+    bocor. Klien sinkron: `GET` id tersebut; 200 = sudah tersimpan (retry), 404 = buat id baru.
+    """
+
+    code = "record.conflict"
     status_code = 409
 
 
@@ -93,3 +117,4 @@ async def _record_error_handler(request: Request, exc: Exception) -> JSONRespons
 def register_record_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RecordNotFound, _record_error_handler)
     app.add_exception_handler(VersionConflict, _record_error_handler)
+    app.add_exception_handler(RecordConflict, _record_error_handler)

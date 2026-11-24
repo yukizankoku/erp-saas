@@ -6,7 +6,10 @@ Lapis 1 isolasi tenant (filter aplikasi); lapis 2 = RLS PostgreSQL. Setiap metod
 `sa.select(Model)` langsung. Record tenant lain = tidak ada (None / 404, bukan 403).
 
 Repository hanya `flush()`; commit/rollback milik dependency sesi atau service. Setelah
-`VersionConflict` dari flush, sesi wajib di-rollback sebelum dipakai lagi.
+`VersionConflict` dari flush, sesi wajib di-rollback sebelum dipakai lagi. Pengecualian: `create`
+dengan `id` yang sudah dipakai (PK global, tenant mana pun) me-rollback transaksi sesi sendiri
+(kecuali di dalam savepoint pemanggil — savepoint itu yang dibatalkan pemanggil) lalu raise
+`RecordConflict` (409, pesan identik untuk tenant sendiri/lain).
 """
 
 from collections.abc import Mapping, Sequence
@@ -16,17 +19,19 @@ from typing import Any
 from uuid import UUID
 
 import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.core.ids import uuid7
 from app.core.tenancy.context import current_user_id, require_tenant_id
 from app.core.tenancy.session import ensure_tenant_bound
-from app.framework.errors import RecordNotFound, VersionConflict
+from app.framework.errors import RecordConflict, RecordNotFound, VersionConflict
 from app.framework.record import SYSTEM_COLUMNS, BaseRecord
 
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
+UNIQUE_VIOLATION = "23505"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +92,17 @@ class TenantRepository[T: BaseRecord]:
             setattr(record, key, value)
         record.tenant_id = tenant_id
         self.session.add(record)
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError as exc:
+            if not self._is_primary_key_violation(exc):
+                raise
+            # Flush gagal → transaksi tak bisa dipakai lagi; rollback agar sesi siap pakai. Di dalam
+            # savepoint pemanggil cukup savepoint itu yang batal (`async with begin_nested()`),
+            # transaksi induk tetap utuh. Pesan sengaja sama untuk id tenant sendiri/lain.
+            if not self.session.in_nested_transaction():
+                await self.session.rollback()
+            raise RecordConflict() from exc
         return record
 
     async def update(self, id: UUID, values: Mapping[str, Any], *, expected_version: int) -> T:
@@ -129,6 +144,21 @@ class TenantRepository[T: BaseRecord]:
             await self.session.flush()
         except StaleDataError as exc:
             raise VersionConflict() from exc
+
+    def _is_primary_key_violation(self, exc: IntegrityError) -> bool:
+        """Unique violation pada constraint PK tabel model (`pk_<tabel>`, naming convention)."""
+        orig = exc.orig
+        if getattr(orig, "sqlstate", None) != UNIQUE_VIOLATION:
+            return False
+        # asyncpg: `driver_exception.constraint_name`; psycopg: `diag.constraint_name`.
+        driver = getattr(orig, "driver_exception", None) or getattr(orig, "__cause__", None)
+        constraint = getattr(driver, "constraint_name", None) or getattr(
+            getattr(orig, "diag", None), "constraint_name", None
+        )
+        table = sa.inspect(self.model).local_table
+        return constraint is not None and constraint == (
+            table.primary_key.name or f"pk_{table.name}"
+        )
 
     def _check_values(self, values: Mapping[str, Any], *, allow_id: bool) -> None:
         columns = {attr.key for attr in sa.inspect(self.model).column_attrs}
