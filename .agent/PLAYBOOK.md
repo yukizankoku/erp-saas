@@ -36,6 +36,9 @@ Sebelum memulai setiap tugas: cek `TZ=Asia/Jakarta date`. **Lewat `stop_new_task
    - Beri tiap sub-agent: nomor issue, ID PRD, path file, acceptance criteria, batasan waktu. Jangan kirim seluruh PRD.
    - Set parameter model sesuai tier peran bila pemetaan tier → model diberikan di prompt run.
    - Paralel hanya untuk sub-tugas independen, maks. `max_parallel_subagents`.
+   - Sub-agent berbagi folder kerja dengan PM: selama sub-agent menulis, PM tidak boleh `git add -A`/pindah branch
+     di folder itu. Kerja paralel PM atau sub-agent lain → pakai worktree terpisah (`git worktree add` atau
+     opsi isolasi worktree pada Agent). Stage file secara eksplisit, bukan `git add -A`.
 3. Jalankan pemeriksaan yang sama dengan CI secara lokal (lihat `CLAUDE.md` › Perintah). Semua harus hijau.
 4. Buat PR ke `develop`: judul `[ID-PRD] ringkasan`, isi: apa & mengapa, cara uji, checklist DoD, `Closes #<issue>`.
 5. Gerbang PO (CLAUDE.md › Gerbang) tersentuh? → label PR & issue `needs-po`, jangan merge, lanjut tugas lain.
