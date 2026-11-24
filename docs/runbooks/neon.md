@@ -26,6 +26,18 @@ neon env pull        # tarik ulang env
 neon checkout dev --create   # branch pengembangan (TTL 7 hari sesuai neon.ts)
 ```
 
+## Migrasi ke Neon
+
+Alembic **tidak pernah** membaca `.env.local`: URL migrasi hanya dari environment proses
+(`DATABASE_URL_UNPOOLED` → `DATABASE_URL_DIRECT` → `DATABASE_URL`) atau `-x db_url=…`, dan host tujuan dicetak
+sebelum migrasi (ADR 0004). Untuk sengaja memigrasi Neon, export eksplisit dari `backend/`:
+
+```bash
+(set -a; . ../.env.local; set +a; uv run alembic upgrade head)
+```
+
+Periksa baris `alembic: database tujuan host=…` sebelum melanjutkan. Migrasi produksi yang destruktif = gerbang PO.
+
 ## Uji ujung-ke-ujung
 
 Sesi agent cloud **tidak bisa** membuka koneksi TCP ke Postgres Neon (proxy hanya meneruskan HTTPS); API Neon
