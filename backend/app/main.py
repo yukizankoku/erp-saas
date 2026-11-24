@@ -11,6 +11,10 @@ from app import __version__
 from app.core.config import get_settings
 from app.core.db import get_engine
 
+# Mendaftarkan listener `after_begin` (set_config app.tenant_id per transaksi) untuk semua Session.
+from app.core.tenancy import session as _tenancy_session  # noqa: F401
+from app.framework.errors import register_record_error_handlers
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +40,7 @@ def create_app() -> FastAPI:
         docs_url=f"{settings.api_prefix}/docs",
         redoc_url=None,
     )
+    register_record_error_handlers(app)
 
     @app.get(f"{settings.api_prefix}/health", response_model=HealthResponse, tags=["system"])
     async def health() -> HealthResponse:
