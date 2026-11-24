@@ -2,11 +2,18 @@
   "name": "erp-saas",
   "private": true,
   "packageManager": "pnpm@10.28.0",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
+    "build": "pnpm --filter web build",
     "dev:web": "pnpm --filter web dev",
     "build:web": "pnpm --filter web build",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test"
+  },
+  "dependencies": {
+    "@neon/config": "^1.14.6",
+    "@neon/env": "^2.1.9"
   }
 }
