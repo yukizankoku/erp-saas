@@ -16,9 +16,15 @@ from sqlalchemy import Connection, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from app.core.db import Base
-from app.core.tenancy.rls import POLICY_NAME, TENANT_SETTING, tenant_rls_sql
+from app.core.tenancy.rls import POLICY_NAME, TENANT_PREDICATE, TENANT_SETTING, tenant_rls_sql
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+# Bentuk deparse PostgreSQL (`pg_policies.qual` / `with_check`) dari `rls.TENANT_PREDICATE`.
+# Dibandingkan persis: pola LIKE meloloskan policy longgar seperti `(<predikat>) OR true`.
+EXPECTED_POLICY_EXPR = (
+    "(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)"
+)
 
 # Satu baris per tabel biasa/partisi yang punya kolom tenant_id di skema non-sistem.
 AUDIT_SQL = text(
@@ -28,14 +34,15 @@ AUDIT_SQL = text(
            c.relrowsecurity AS rls_enabled,
            c.relforcerowsecurity AS rls_forced,
            EXISTS (
-             SELECT 1 FROM pg_policy p
-             WHERE p.polrelid = c.oid
-               AND p.polname = :policy
-               AND p.polpermissive
-               AND p.polcmd = '*'
-               AND p.polroles = '{0}'::oid[]
-               AND pg_get_expr(p.polqual, p.polrelid) LIKE :predicate
-               AND pg_get_expr(p.polwithcheck, p.polrelid) LIKE :predicate
+             SELECT 1 FROM pg_policies p
+             WHERE p.schemaname = n.nspname
+               AND p.tablename = c.relname
+               AND p.policyname = :policy
+               AND p.permissive = 'PERMISSIVE'
+               AND p.cmd = 'ALL'
+               AND p.roles = '{public}'::name[]
+               AND p.qual = :expected
+               AND p.with_check = :expected
            ) AS has_tenant_policy,
            ARRAY(
              SELECT p.polname::text FROM pg_policy p
@@ -60,7 +67,7 @@ AUDIT_SQL = text(
 
 async def audit_tenant_tables(conn: AsyncConnection) -> tuple[list[str], list[str]]:
     """Kembalikan (tabel yang diperiksa, daftar pelanggaran)."""
-    params = {"policy": POLICY_NAME, "predicate": f"%NULLIF(current_setting('{TENANT_SETTING}'%"}
+    params = {"policy": POLICY_NAME, "expected": EXPECTED_POLICY_EXPR}
     rows = (await conn.execute(AUDIT_SQL, params)).mappings().all()
     checked: list[str] = []
     problems: list[str] = []
@@ -81,6 +88,42 @@ async def audit_tenant_tables(conn: AsyncConnection) -> tuple[list[str], list[st
         if not row["has_tenant_index"]:
             problems.append(f"{name}: tidak ada indeks berawalan tenant_id")
     return checked, problems
+
+
+async def test_audit_rejects_policy_that_only_resembles_tenant_predicate(
+    admin_engine: AsyncEngine,
+) -> None:
+    """Policy longgar yang memuat predikat tenant (mis. `... OR true`) tidak boleh lolos."""
+    loose = {
+        # USING & WITH CHECK sama-sama dilonggarkan.
+        "meta_probe_or_true": (f"({TENANT_PREDICATE}) OR true", f"({TENANT_PREDICATE}) OR true"),
+        # Hanya WITH CHECK yang longgar → INSERT/UPDATE ke tenant lain.
+        "meta_probe_check_or": (TENANT_PREDICATE, f"({TENANT_PREDICATE}) OR tenant_id IS NOT NULL"),
+        # Nama setting lain yang diawali `app.tenant_id`.
+        "meta_probe_other_guc": (
+            TENANT_PREDICATE.replace(TENANT_SETTING, f"{TENANT_SETTING}_x"),
+            TENANT_PREDICATE.replace(TENANT_SETTING, f"{TENANT_SETTING}_x"),
+        ),
+    }
+    async with admin_engine.connect() as conn:
+        for table, (using, check) in loose.items():
+            await conn.execute(
+                text(f"CREATE TABLE {table} (id uuid PRIMARY KEY, tenant_id uuid NOT NULL)")
+            )
+            await conn.execute(text(f"CREATE INDEX ix_{table} ON {table} (tenant_id)"))
+            await conn.execute(text(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"))
+            await conn.execute(text(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY"))
+            await conn.execute(
+                text(f"CREATE POLICY {POLICY_NAME} ON {table} USING ({using}) WITH CHECK ({check})")
+            )
+        checked, problems = await audit_tenant_tables(conn)
+        await conn.rollback()
+
+    for table in loose:
+        assert f"public.{table}" in checked
+        assert [p for p in problems if p.startswith(f"public.{table}:")] == [
+            f"public.{table}: policy {POLICY_NAME} tidak ada / tidak sesuai"
+        ]
 
 
 def _alembic_config(connection: Connection) -> Config:
