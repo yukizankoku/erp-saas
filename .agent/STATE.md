@@ -2,34 +2,33 @@
 
 > Diperbarui setiap checkpoint oleh PM Agent. Maks. 150 baris; ganti isi lama, jangan menumpuk riwayat.
 
-**Diperbarui:** 2026-11-24 malam (sesi Fase 0 manual)
-**Fase aktif:** 1 — Platform Inti (Fase 0 selesai, kecuali setup Vercel/Neon yang menunggu PO)
-**Mode:** active · **Run otomatis pertama:** Rabu 25 Nov 2026 18:07 WIB
+**Diperbarui:** 2026-11-24 22:00 WIB (run manual 2026-11-24T2102, perintah PO "KERJAKAN SEKARANG")
+**Fase aktif:** 1 — Platform Inti · **Mode:** active
+**Batas pemakaian:** berhenti bila mingguan ≥ 65% (keputusan PO). Terakhir: mingguan 57%, 5 jam 84% (reset 01:40 WIB).
 
-## Selesai (Fase 0)
-- PRD v0.3 disetujui PO (`docs/PRD.md`); ADR 0001–0003.
-- Monorepo: backend FastAPI + SQLAlchemy async + Alembic; web React + TS + Vite PWA; pnpm workspace.
-- CI: workflow `backend`, `web`, `security` (filter path); Dependabot bulanan; template PR.
-- Agent ops: `CLAUDE.md`, 9 sub-agent, `control.yaml`, `PLAYBOOK.md`, pre-flight, lock `agent/lock`, `scripts/dev_pg.sh`.
-- Backlog Fase 1: issue #2–#26 (P1-01 … P1-25).
-- Scheduled tasks → sesi runner "ERP Agent Runner (otomatis)" (ADR 0003).
+## Selesai
+- Fase 0 lengkap (PRD v0.3, monorepo, CI, agent ops, ADR 0001–0003, runner + jadwal).
+- #2 P1-01 Fondasi data (PR #33): UUIDv7, konteks tenant per transaksi (aman savepoint), RLS FORCE fail-closed,
+  BaseRecord + TenantRepository, 409 record.conflict, URL migrasi hanya dari env proses. ADR 0004. 115 test.
+- #35 bentrok id → 409 (ikut PR #33).
+- Neon: `neon init` + `neon deploy` OK; backend tersambung (PR #30) — `DATABASE_URL` pooled / `DATABASE_URL_UNPOOLED` direct.
+- Vercel: preview deploy hijau (PR #32): web statis + FastAPI di `/api/*`, region sin1.
 
-## Berikutnya (urutan disarankan)
-1. #2 P1-01 Fondasi data: BaseRecord, konteks tenant & RLS — tanpa dependensi, jalur sensitif.
-2. #10 P1-09 Ports & adapters — tanpa dependensi.
-3. #3 P1-02 Tenant/company/branch/warehouse.
-4. #18 P1-17 i18n/zona waktu/mata uang → #19 P1-18 design system & app shell.
-5. Lalu #4 auth, #6 IAM, #8 menu modular, #9 audit, dst. sesuai dependensi di tiap issue.
+## Berikutnya (urutan)
+1. #36 P1-01d filter tenant otomatis di level ORM (wajib sebelum tabel bisnis pertama).
+2. #37 P1-01e FK komposit (tenant_id, x_id) + amandemen ADR 0004.
+3. #10 P1-09 Ports & adapters.
+4. #3 P1-02 Tenant/company/branch/warehouse (bergantung #36, #37).
 
 ## Menunggu PO
-- #24 P1-23: akun Vercel + Neon (region Singapura).
-- Pengaturan GitHub: default branch → `main`; "Automatically delete head branches"; proteksi branch `main`.
-- Rilis pertama `develop` → `main` (berisi Fase 0) — butuh persetujuan PO.
+- PR #31 `neon-smoke`: tambahkan secret repo `NEON_API_KEY`, lalu PM menjalankan ulang job sebagai bukti akhir Neon.
+- #34 role `app_runtime` di Neon (gerbang keamanan) — RLS belum efektif di produksi sampai selesai.
+- Vercel: set env `DATABASE_URL` (pooled Neon) + `DATABASE_POOL_SIZE=0`.
+- GitHub: default branch → `main`; "Automatically delete head branches"; proteksi `main`.
 
 ## Catatan teknis
-- TypeScript dikunci 6.x (typescript-eslint belum mendukung TS 7).
-- Proxy sesi agent menolak penghapusan ref git → branch tidak bisa dihapus agent; lock memakai commit fast-forward (ADR 0002).
-- Sesi baru dari scheduled task tidak punya akses tulis GitHub → semua run lewat sesi runner (ADR 0003).
-  `fire_trigger` selalu membuat sesi baru tanpa repo — untuk uji gunakan scheduled task sekali jalan (`run_once_at`).
-- Docker tidak tersedia di sesi agent → `eval "$(scripts/dev_pg.sh)"` untuk PostgreSQL lokal; CI memakai PostgreSQL 17.
-- Membuat `.claude/settings.json` (aturan izin) dari sesi agent ditolak pengaman — keputusan PO bila dibutuhkan.
+- Sub-agent berbagi folder kerja dengan PM → PM memakai `git worktree` untuk kerja paralel; stage file eksplisit.
+- Sesi agent cloud tidak bisa TCP ke Postgres Neon (hanya HTTPS); uji Neon lewat GitHub Actions (`neon-smoke`).
+- `/tmp/claude-0` berkala kembali ke izin 700 → PostgreSQL uji lokal crash; jalankan `chmod 711 /tmp/claude-0` lalu
+  `scripts/dev_pg.sh` lagi.
+- TypeScript dikunci 6.x; proxy menolak hapus branch (lock via commit fast-forward, ADR 0002); runner persisten (ADR 0003).
