@@ -1,0 +1,26 @@
+# Pembaruan dependensi bulanan & dikelompokkan agar hemat menit CI dan tidak membanjiri PR.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/backend"
+    schedule: { interval: "monthly" }
+    target-branch: "develop"
+    open-pull-requests-limit: 3
+    groups:
+      python: { patterns: ["*"] }
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule: { interval: "monthly" }
+    target-branch: "develop"
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+    groups:
+      javascript: { patterns: ["*"] }
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule: { interval: "monthly" }
+    target-branch: "develop"
+    groups:
+      actions: { patterns: ["*"] }

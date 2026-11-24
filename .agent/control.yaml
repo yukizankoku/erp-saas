@@ -1,0 +1,28 @@
+# Kill switch & jam kerja agent (PRD §5.2–5.4). PO boleh mengedit file ini langsung di GitHub (branch develop).
+mode: active              # active | paused | stopped | hemat
+timezone: Asia/Jakarta
+
+blocked_window:           # agent DILARANG bekerja di jendela ini (keputusan PO 24 Nov 2026)
+  days: [mon, tue, wed, thu, fri]
+  start: "05:00"
+  end: "18:00"
+
+stop_new_tasks_minutes: 30   # berhenti ambil tugas baru 30 menit sebelum deadline (05:00 → 04:30)
+deadline_buffer_minutes: 15  # deadline = run terjadwal berikutnya − 15 menit (atau awal blocked_window)
+
+work_on_public_holidays: true
+public_holidays: []          # format "YYYY-MM-DD", mis. ["2026-12-25"]
+
+# Harus sama dengan scheduled task di claude.ai (dipakai untuk menghitung deadline run).
+schedule:
+  - days: [mon, tue, wed, thu, fri]
+    times: ["18:07"]
+  - days: [mon, tue, wed, thu, fri, sat, sun]
+    times: ["00:07"]
+  - days: [sat, sun]
+    times: ["05:07", "10:07", "15:07", "19:07"]
+report_time: "04:47"          # laporan harian (read-only, tanpa lock)
+
+max_tasks_per_run: 3
+max_parallel_subagents: 2
+lock_stale_hours: 6

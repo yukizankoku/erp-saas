@@ -1,0 +1,64 @@
+name: backend
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "scripts/**"
+      - ".agent/control.yaml"
+      - ".github/workflows/backend.yml"
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "scripts/**"
+      - ".agent/control.yaml"
+      - ".github/workflows/backend.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: erp
+          POSTGRES_PASSWORD: erp_ci_only
+          POSTGRES_DB: erp
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U erp -d erp"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://erp:erp_ci_only@localhost:5432/erp
+      ENVIRONMENT: test
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Lint
+        run: uv run ruff check . ../scripts && uv run ruff format --check . ../scripts
+      - name: Type-check
+        run: uv run mypy app && uv run mypy --strict ../scripts/agent_preflight.py ../scripts/agent_lock.py
+      - name: Test
+        run: uv run pytest && uv run pytest ../scripts/tests
+      - name: Migrasi (upgrade → check → downgrade → upgrade)
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+          uv run alembic downgrade base
+          uv run alembic upgrade head

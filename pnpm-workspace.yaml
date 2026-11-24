@@ -1,0 +1,4 @@
+packages:
+  - "web"
+  - "packages/*"
+  # - "mobile"   # diaktifkan di Fase 3
