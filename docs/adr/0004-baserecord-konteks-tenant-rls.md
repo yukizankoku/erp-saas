@@ -1,6 +1,7 @@
 # 0004 — BaseRecord, konteks tenant, dan RLS
 
-**Status:** Diusulkan (24 Nov 2026) — perlu review `security`; provisioning role DB produksi = gerbang PO ·
+**Status:** Diusulkan (24 Nov 2026; direvisi pasca review `security` PR #33: savepoint, 409 id bentrok, URL migrasi)
+— provisioning role DB produksi = gerbang PO ·
 **Rujukan:** issue #2 (P1-01), PRD §6.4, §6.6, §6.7, §7.0, ADR 0001 (#3, #4, #6)
 
 ## Konteks
@@ -27,6 +28,10 @@ tenant dari request/job sampai PostgreSQL, aman di PgBouncer mode transaksi (Neo
 @event.listens_for(Session, "after_begin")  # Session sinkron di balik AsyncSession
 def _bind_tenant(session: Session, transaction: SessionTransaction, connection: Connection) -> None:
     ctx = get_context()
+    if transaction.nested:  # SAVEPOINT: warisi binding induk, jangan set GUC/info
+        if ctx is not None and ctx.tenant_id != session.info.get("rls_tenant_id"):
+            raise TenantRebindError(...)
+        return
     session.info["rls_tenant_id"] = ctx.tenant_id if ctx else None
     if ctx is not None:
         connection.execute(text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(ctx.tenant_id)})
@@ -36,6 +41,12 @@ def _bind_tenant(session: Session, transaction: SessionTransaction, connection: 
 - `async ensure_tenant_bound(session)` dipanggil repository sebelum query: `await session.connection()` lalu, bila
   `info["rls_tenant_id"] != require_tenant_id()` (transaksi dimulai sebelum konteks diset, mis. lookup auth), jalankan
   `set_config` yang sama di transaksi aktif — tanpa ini query pertama setelah auth diam-diam mengembalikan 0 baris.
+  Sudah terikat ke tenant lain → `TenantRebindError` (satu transaksi per tenant).
+- **Savepoint (`begin_nested`) tidak pernah mengikat/memindah tenant.** `set_config` di savepoint batal oleh
+  `ROLLBACK TO SAVEPOINT` sedangkan `session.info` tidak → binding & GUC tak sinkron (0 baris senyap, atau transaksi
+  tenant A berjalan sebagai B). Konteks ≠ binding induk (termasuk induk belum terikat) → `TenantRebindError` saat
+  savepoint mulai; `ensure_tenant_bound` juga menolak bind pertama di dalam savepoint. Konteks kosong di savepoint =
+  binding induk tetap. Ikat tenant (repository / `ensure_tenant_bound`) **sebelum** `begin_nested()`.
 
 ### 4. `BaseRecord` (`framework/record.py`) — mixin: `class Product(BaseRecord, Base)`
 | Kolom | Tipe | Aturan |
@@ -74,6 +85,12 @@ CREATE POLICY tenant_isolation ON {t}
   DEFAULT PRIVILEGES`) → aplikasi. **`app_rls_test`** (NOLOGIN NOSUPERUSER NOBYPASSRLS) → test via `SET ROLE`.
 - Superuser & BYPASSRLS **selalu** melewati RLS, termasuk FORCE. Provisioning `app_runtime` di Neon = **gerbang PO**;
   sampai selesai, bila `rolsuper OR rolbypassrls` milik `current_user` = true, RLS **belum aktif** (hanya lapis 1).
+- **URL Alembic** hanya dari koneksi pemanggil (`config.attributes["connection"]`), `-x db_url=...`, atau env proses
+  `DATABASE_URL_UNPOOLED` → `DATABASE_URL_DIRECT` → `DATABASE_URL` (`core/migration_target.py`) — bukan `Settings`,
+  yang juga membaca `.env.local` (Neon dari `neon env pull`). Tujuan (host/port/db/user, tanpa password) dicetak ke
+  stderr sebelum migrasi; ke Neon wajib eksplisit `set -a; . ../.env.local; set +a`.
+- Runbook `docs/runbooks/db-roles.md`: owner non-superuser PG16+ tak boleh menyebut `NOSUPERUSER`/`NOBYPASSRLS`/…
+  di `ALTER ROLE` → DO-block memverifikasi atribut & keanggotaan lalu `RAISE EXCEPTION` bila tidak aman.
 
 ### 7. `TenantRepository[T]` (`framework/repository.py`)
 ```python
@@ -89,9 +106,14 @@ class TenantRepository[T: BaseRecord]:
 - Tiap metode memanggil `ensure_tenant_bound()`; query subclass disusun dari `self.select()`, bukan `sa.select(Model)`.
   Kolom sistem (`tenant_id`, `version`, `created_*`, `updated_*`, `deleted_*`) ditolak di `values`. Record tenant lain
   → `None`/404 (bukan 403). Repository hanya `flush()`; commit milik dependency sesi/service.
+- `create` dengan `id` yang sudah dipakai (PK global; tenant sendiri, terhapus, **atau** tenant lain) → unique
+  violation pada `pk_<tabel>` → `rollback()` sesi (di dalam savepoint pemanggil: hanya savepoint itu yang batal) +
+  `RecordConflict` → 409 `record.conflict`, kode & pesan identik untuk semua kasus (tidak membocorkan baris tenant
+  lain). Klien sinkron: `GET` id itu; 200 = sudah tersimpan (retry), 404 = buat id baru. Unique violation lain tetap
+  `IntegrityError` (dipetakan per modul).
 - `update`: `version` termuat ≠ `expected_version` (`If-Match`; `version_id_col` hanya memakai versi termuat) →
   `VersionConflict`; balapan sesudahnya = `StaleDataError` saat `flush()` → `VersionConflict`. Handler global:
-  404 `record.not_found`, 409 `record.version_conflict` (Problem Details, pesan i18n id+en).
+  404 `record.not_found`, 409 `record.version_conflict` / `record.conflict` (Problem Details, pesan i18n id+en).
 - `soft_delete`: isi `deleted_*` + `delete_batch_id = batch_id or uuid7()`, kembalikan batch id (restore massal §7.0);
   `version` ikut naik → terlihat sinkron (§6.6). `list`: offset, `ORDER BY id DESC`, `items` + `has_more` (tanpa `COUNT`).
 
@@ -101,14 +123,21 @@ class TenantRepository[T: BaseRecord]:
   test integrasi berjalan dengan RLS aktif (aman: tanpa pooler). Role & tabel uji dibuat idempotent.
 - Wajib: guard `rolsuper = rolbypassrls = false` untuk role aktif (cegah hijau palsu); tanpa konteks → 0 baris & INSERT
   ditolak; A tak bisa SELECT/UPDATE/DELETE baris B; INSERT `tenant_id` B di konteks A ditolak; konteks hilang setelah
-  commit; `ensure_tenant_bound`; soft delete tersembunyi; konflik versi → 409; `uuid7()` versi/varian/urutan.
+  commit **dan rollback**; `ensure_tenant_bound`; savepoint tak bisa memindah/mengikat tenant; FORCE berlaku untuk
+  pemilik tabel non-superuser; soft delete tersembunyi; konflik versi → 409; id bentrok (tenant sendiri/lain) → 409
+  identik; `uuid7()` versi/varian/urutan; pemilih URL migrasi mengabaikan env file.
 - Meta-test pasca `alembic upgrade head`: tiap tabel ber-`tenant_id` punya RLS + FORCE, policy, indeks awal `tenant_id`.
+  `qual` & `with_check` di `pg_policies` dibandingkan **persis** dengan deparse predikat
+  `(tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid)` — bukan LIKE, yang
+  meloloskan `(<predikat>) OR true`; test negatif membuktikan policy longgar ditolak.
 
 ## Konsekuensi
 - Modul cukup `class X(BaseRecord, Base)` + `enable_tenant_rls()` di migrasi; lupa set konteks = error / 0 baris, bukan
   kebocoran. Biaya: 1 round-trip `set_config` per transaksi. Kerja lintas tenant (purge trial) wajib loop per tenant.
 - Risiko utama: RLS produksi baru efektif setelah `app_runtime` diprovisikan (gerbang PO); sampai itu hanya lapis 1.
-  PK unik global: id klien yang bentrok lintas tenant → 409 (tebakan tidak praktis, 74 bit acak).
+  PK unik global: id klien yang bentrok lintas tenant → 409 `record.conflict` identik dengan bentrok di tenant
+  sendiri (tebakan tidak praktis, 74 bit acak); `create` yang bentrok me-rollback transaksi sesi — bungkus dengan
+  `begin_nested()` bila pekerjaan lain di transaksi yang sama harus dipertahankan.
 
 ## Alternatif yang ditolak
 - **Schema/DB per tenant** — migrasi N skema & pool per tenant, mahal di Neon free; tetap opsi enterprise P3 (PRD §6.4).

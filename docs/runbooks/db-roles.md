@@ -17,6 +17,9 @@ Rujukan: ADR 0004 §5–§6, PRD §6.4, §6.7. Jalur sensitif: perubahan isi run
   masih memakai role seperti itu, isolasi tenant hanya lapis 1 (filter repository) — RLS belum efektif.
 - Pemilik tabel tanpa BYPASSRLS tetap terkena RLS karena setiap tabel tenant memakai `FORCE`.
 - **Jangan** memberi `TRUNCATE` ke `app_runtime`: TRUNCATE tidak melewati policy RLS.
+- Alembic membaca URL hanya dari `-x db_url=...` / env proses (`DATABASE_URL_UNPOOLED` → `DATABASE_URL_DIRECT` →
+  `DATABASE_URL`), bukan `.env.local`. Ke Neon harus eksplisit dari `backend/`:
+  `(set -a; . ../.env.local; set +a; uv run alembic upgrade head)` — cek host tujuan yang dicetak ke stderr.
 
 ## 1. Provisioning `app_runtime` (idempotent)
 
@@ -26,6 +29,11 @@ Jalankan dengan `psql` sebagai **owner** (role pembuat tabel lewat Alembic) pada
 psql "$DATABASE_URL_DIRECT" -v owner=neondb_owner -v dbname=neondb -f app_runtime.sql
 ```
 
+Skrip sengaja **tidak** menyebut `NOSUPERUSER`/`NOBYPASSRLS`/`NOREPLICATION`/`NOCREATEDB`: di PostgreSQL 16+ owner
+non-superuser (mis. `neondb_owner`) ditolak bila menyebut atribut itu di `ALTER ROLE`, walau nilainya "NO". Atribut
+default `CREATE ROLE` sudah aman; DO-block memverifikasinya dan menghentikan skrip bila tidak (perbaikan butuh
+superuser — eskalasi ke PO). Teruji di PostgreSQL 16 dengan owner non-superuser (CREATEROLE CREATEDB), dua kali jalan.
+
 `app_runtime.sql`:
 
 ```sql
@@ -33,14 +41,37 @@ psql "$DATABASE_URL_DIRECT" -v owner=neondb_owner -v dbname=neondb -f app_runtim
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_runtime') THEN
-    CREATE ROLE app_runtime LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;
+    CREATE ROLE app_runtime LOGIN;  -- default: NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION
   END IF;
 END
 $$;
--- Paksa atribut aman walau role sudah ada.
-ALTER ROLE app_runtime LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;
+
+-- Hentikan bila role (sudah ada / dibuat pihak lain) dapat melewati RLS atau mengelola role/database.
+DO $$
+DECLARE
+  r record;
+  privileged text[];
+BEGIN
+  SELECT oid, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolreplication
+    INTO STRICT r FROM pg_roles WHERE rolname = 'app_runtime';
+  IF r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication THEN
+    RAISE EXCEPTION 'app_runtime has unsafe attributes (super=%, bypassrls=%, createrole=%, createdb=%, replication=%)',
+      r.rolsuper, r.rolbypassrls, r.rolcreaterole, r.rolcreatedb, r.rolreplication;
+  END IF;
+  SELECT array_agg(g.rolname::text ORDER BY g.rolname) INTO privileged
+    FROM pg_roles g
+   WHERE g.oid <> r.oid AND pg_has_role(r.oid, g.oid, 'MEMBER')
+     AND (g.rolsuper OR g.rolbypassrls OR g.rolcreaterole OR g.rolcreatedb OR g.rolreplication);
+  IF privileged IS NOT NULL THEN
+    RAISE EXCEPTION 'app_runtime is a member of privileged roles: %', privileged;
+  END IF;
+END
+$$;
+ALTER ROLE app_runtime LOGIN;
 
 GRANT CONNECT ON DATABASE :"dbname" TO app_runtime;
+-- PostgreSQL < 15 (dan database hasil upgrade darinya) memberi CREATE di schema public ke PUBLIC.
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO app_runtime;
 REVOKE CREATE ON SCHEMA public FROM app_runtime;
 
@@ -61,28 +92,51 @@ BEGIN
   END IF;
 END
 $$;
+
+-- Verifikasi akhir: gagal = skrip berhenti dengan error.
+DO $$
+BEGIN
+  IF has_schema_privilege('public', 'public', 'CREATE')
+     OR has_schema_privilege('app_runtime', 'public', 'CREATE') THEN
+    RAISE EXCEPTION 'schema public is still writable (CREATE) by PUBLIC or app_runtime';
+  END IF;
+  IF COALESCE(has_table_privilege('app_runtime', to_regclass('public.alembic_version'),
+                                  'INSERT, UPDATE, DELETE, TRUNCATE'), false) THEN
+    RAISE EXCEPTION 'app_runtime can still modify public.alembic_version';
+  END IF;
+END
+$$;
 ```
+
+**Setelah migrasi pertama:** `alembic_version` dibuat owner oleh `alembic upgrade head` pertama, dan `ALTER DEFAULT
+PRIVILEGES` di atas otomatis memberi `INSERT, UPDATE, DELETE` ke `app_runtime`. Bila skrip dijalankan sebelum migrasi
+pertama, **jalankan ulang skrip yang sama** (idempotent) sesudahnya, lalu ulangi verifikasi §2 — `can_touch_alembic`
+harus `f`.
 
 Password: set lewat `\password app_runtime` di psql (dikirim sebagai hash, tidak masuk log/history), simpan
 langsung di secret manager (Vercel/hosting) sebagai `DATABASE_URL` pooled. Jangan menulis password ke file, commit,
 issue, atau laporan.
 
 **Neon:** buat `app_runtime` lewat SQL di atas, bukan lewat Console/API — role dari Console/API otomatis menjadi
-anggota `neon_superuser` (dapat `SET ROLE` ke role ber-BYPASSRLS). Query verifikasi di bawah mendeteksinya.
+anggota `neon_superuser` (dapat `SET ROLE` ke role ber-BYPASSRLS). DO-block di atas dan query verifikasi mendeteksinya.
 
-## 2. Verifikasi (wajib setelah provisioning dan setelah mengganti `DATABASE_URL`)
+## 2. Verifikasi (wajib setelah provisioning, setelah migrasi pertama, dan setelah mengganti `DATABASE_URL`)
 
 Sebagai owner:
 
 ```sql
-SELECT r.rolname, r.rolcanlogin, r.rolsuper, r.rolbypassrls, r.rolcreaterole, r.rolcreatedb,
+SELECT r.rolname, r.rolcanlogin, r.rolsuper, r.rolbypassrls, r.rolcreaterole, r.rolcreatedb, r.rolreplication,
        ARRAY(SELECT g.rolname FROM pg_roles g
              WHERE g.oid <> r.oid AND pg_has_role(r.oid, g.oid, 'MEMBER')
                AND (g.rolsuper OR g.rolbypassrls)) AS privileged_memberships,
        (SELECT count(*) FROM pg_class c WHERE c.relowner = r.oid) AS owned_relations,
-       has_table_privilege(r.oid, 'public.alembic_version', 'UPDATE') AS can_touch_alembic
+       has_schema_privilege('public', 'public', 'CREATE') AS public_can_create,
+       has_schema_privilege(r.oid, 'public', 'CREATE') AS runtime_can_create,
+       has_table_privilege(r.oid, to_regclass('public.alembic_version'), 'INSERT, UPDATE, DELETE, TRUNCATE')
+         AS can_touch_alembic
 FROM pg_roles r WHERE r.rolname = 'app_runtime';
--- Harus: t | f | f | f | f | {} | 0 | f   (kolom terakhir error bila alembic_version belum ada)
+-- Harus: t | f | f | f | f | f | {} | 0 | f | f | f
+-- (can_touch_alembic NULL = alembic_version belum ada → ulangi setelah migrasi pertama)
 ```
 
 Dari koneksi aplikasi (`DATABASE_URL`):
