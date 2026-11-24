@@ -9,7 +9,8 @@ Sumber aturan: PRD §5. Bila bertentangan, PRD yang berlaku.
 
 ### A1. Persiapan (murah — jangan membaca apa pun selain yang disebut)
 
-1. Pastikan repo ada (`git -C <repo> rev-parse HEAD`); jika belum, attach & clone sesuai instruksi prompt run.
+1. Pastikan repo ada (`git -C <repo> rev-parse HEAD`); di sesi runner repo sudah terpasang — jangan clone ulang.
+   Abaikan detail run-run sebelumnya di riwayat percakapan: sumber kebenaran hanya `STATE.md`, issue, dan git.
 2. `git fetch origin develop && git checkout -B develop origin/develop`
 3. Pre-flight: `uv run --project backend python scripts/agent_preflight.py`
    - `NO-GO` → tulis satu kalimat alasannya lalu **akhiri sesi segera**. Jangan membaca file lain.
@@ -51,7 +52,11 @@ Sebelum memulai setiap tugas: cek `TZ=Asia/Jakarta date`. **Lewat `stop_new_task
 
 ### A5. Menutup run (sebelum `deadline`)
 
-Checkpoint terakhir → `python3 scripts/agent_lock.py release --run-id <RUN_ID>` → akhiri sesi.
+Checkpoint terakhir → berhenti berlangganan aktivitas PR yang sudah merged/ditutup →
+`python3 scripts/agent_lock.py release --run-id <RUN_ID>` → akhiri giliran.
+
+**Event PR (CI, review) yang datang di luar run:** jalankan pre-flight dulu. `NO-GO` → jangan bekerja, akhiri giliran
+dengan satu kalimat. `GO` → tangani hanya PR tersebut (perbaiki CI/merge), lalu akhiri.
 
 ---
 
