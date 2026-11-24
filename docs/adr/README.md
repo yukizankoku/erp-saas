@@ -7,3 +7,4 @@ ADR tidak diedit setelah diterima — keputusan baru yang menggantikan ditulis s
 |---|---|---|
 | 0001 | Fondasi arsitektur | Diterima |
 | 0002 | Lock antar-run agent via branch git | Diterima |
+| 0003 | Run otomatis lewat satu sesi runner persisten | Diterima |

@@ -23,6 +23,7 @@ Spesifikasi lengkap: `docs/PRD.md` — **baca hanya bagian yang relevan** (cari 
 # backend (cd backend)
 uv sync && uv run pytest && uv run ruff check . && uv run ruff format --check . && uv run mypy app
 uv run alembic revision --autogenerate -m "pesan"   # lalu periksa & lengkapi downgrade
+eval "$(../scripts/dev_pg.sh)"                      # PostgreSQL lokal tanpa Docker (sesi agent cloud)
 # web (cd web)
 pnpm install && pnpm lint && pnpm test && pnpm build
 # agent ops (dari root)
