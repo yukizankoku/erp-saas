@@ -1,16 +1,21 @@
 """Lingkungan migrasi Alembic (async).
 
-Migrasi memakai koneksi *direct* (bukan pooled) — PRD §6.7.
+Migrasi memakai koneksi *direct* (bukan pooled) — PRD §6.7. Database tujuan hanya dari koneksi
+pemanggil, `-x db_url=...`, atau env proses DATABASE_URL_UNPOOLED → DATABASE_URL_DIRECT →
+DATABASE_URL — **tidak** dari Settings/.env.local (`app/core/migration_target.py`). Tujuan dicetak
+ke stderr (tanpa password) sebelum migrasi berjalan.
 """
 
 import asyncio
+import os
+import sys
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from app.core.config import get_settings
 from app.core.db import Base, to_async_url
+from app.core.migration_target import describe_target, select_migration_target
 
 # Import model semua modul di sini agar terdeteksi autogenerate (diisi mulai Fase 1).
 
@@ -22,11 +27,12 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    settings = get_settings()
-    url = settings.database_url_direct or settings.database_url
-    if not url:
-        raise RuntimeError("Atur DATABASE_URL_DIRECT atau DATABASE_URL untuk menjalankan migrasi")
-    return to_async_url(url)
+    target = select_migration_target(os.environ, context.get_x_argument(as_dictionary=True))
+    print(
+        f"alembic: database tujuan {describe_target(target.url)} (sumber: {target.source})",
+        file=sys.stderr,
+    )
+    return to_async_url(target.url)
 
 
 def run_migrations_offline() -> None:
@@ -57,7 +63,7 @@ if context.is_offline_mode():
     run_migrations_offline()
 elif (connection := config.attributes.get("connection")) is not None:
     # Dipanggil dari kode (mis. meta-test RLS) dengan koneksi milik pemanggil: URL tidak dibaca
-    # dari settings/.env sehingga migrasi pasti berjalan di database pemanggil.
+    # sama sekali sehingga migrasi pasti berjalan di database pemanggil.
     _do_run_migrations(connection)
 else:
     asyncio.run(run_migrations_online())
