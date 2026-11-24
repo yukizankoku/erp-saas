@@ -23,6 +23,10 @@ schedule:
     times: ["05:07", "10:07", "15:07", "19:07"]
 report_time: "04:47"          # laporan harian (read-only, tanpa lock)
 
+# Batas pemakaian mingguan (keputusan PO 24 Nov 2026): berhenti bila utilisasi 7 hari >= nilai ini.
+# Dibaca PM dari event rate_limit_event sesi sendiri (lihat PLAYBOOK A1 langkah 4).
+weekly_usage_stop: 0.65
+
 max_tasks_per_run: 3
 max_parallel_subagents: 2
 lock_stale_hours: 6

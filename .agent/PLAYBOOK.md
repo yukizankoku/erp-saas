@@ -15,7 +15,11 @@ Sumber aturan: PRD §5. Bila bertentangan, PRD yang berlaku.
 3. Pre-flight: `uv run --project backend python scripts/agent_preflight.py`
    - `NO-GO` → tulis satu kalimat alasannya lalu **akhiri sesi segera**. Jangan membaca file lain.
    - `GO` → catat `stop_new_tasks`, `deadline`, `max_tasks_per_run`, `max_parallel_subagents`.
-4. Run ID = waktu mulai WIB, format `YYYY-MM-DDTHHMM`. Ambil lock:
+4. **Cek batas pemakaian mingguan** (keputusan PO): `get_session` (tanpa id) → `list_events` sesi ini dengan
+   `kinds: ["rate_limit_event"]`, `limit: 100`; ambil event terbaru → `unifiedWindows.seven_day.utilization`.
+   Nilai ≥ `weekly_usage_stop` di `control.yaml` (0.65) → NO-GO "batas mingguan", akhiri sesi. Belum ada event →
+   lanjut, lalu cek ulang setelah tugas pertama. Ulangi cek ini **sebelum setiap tugas** (A3) dan hentikan run bila lewat.
+5. Run ID = waktu mulai WIB, format `YYYY-MM-DDTHHMM`. Ambil lock:
    `python3 scripts/agent_lock.py acquire --run-id <RUN_ID>` → gagal = akhiri sesi.
 
 ### A2. Memilih tugas
@@ -28,7 +32,7 @@ Sumber aturan: PRD §5. Bila bertentangan, PRD yang berlaku.
 
 ### A3. Mengerjakan satu tugas
 
-Sebelum memulai setiap tugas: cek `TZ=Asia/Jakarta date`. **Lewat `stop_new_tasks` → jangan mulai tugas baru.**
+Sebelum memulai setiap tugas: cek `TZ=Asia/Jakarta date` dan batas mingguan (A1 langkah 4). **Lewat `stop_new_tasks` atau utilisasi mingguan ≥ `weekly_usage_stop` → jangan mulai tugas baru.**
 
 1. Label issue `status:in-progress`; branch `feat/<nomor>-<slug>` dari `develop`.
 2. Delegasikan ke sub-agent sesuai alur (PRD §5.5):
@@ -66,7 +70,8 @@ dengan satu kalimat. `GO` → tangani hanya PR tersebut (perbaiki CI/merge), lal
 ## B. Laporan harian (dipicu 04:47 setiap hari — read-only, tanpa lock, tanpa coding)
 
 1. `git fetch origin develop` lalu baca `.agent/STATE.md` dan `.agent/runs/` 24 jam terakhir (dari `origin/develop`).
-2. Kumpulkan via GitHub: PR merged & terbuka 24 jam terakhir, issue `needs-po` & `blocked`, status CI PR terakhir
+2. Catat utilisasi pemakaian 5 jam & mingguan terbaru (cara A1 langkah 4) di bagian "Pemakaian agent".
+   Kumpulkan via GitHub: PR merged & terbuka 24 jam terakhir, issue `needs-po` & `blocked`, status CI PR terakhir
    (CI berjalan di PR, bukan di push ke `develop`),
    progres fase (issue `phase:<n>` tertutup vs total).
 3. Buat issue `Laporan Harian — YYYY-MM-DD` berlabel `daily-report` mengikuti template PRD Lampiran B.
