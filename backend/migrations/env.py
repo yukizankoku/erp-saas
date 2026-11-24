@@ -55,5 +55,9 @@ async def run_migrations_online() -> None:
 
 if context.is_offline_mode():
     run_migrations_offline()
+elif (connection := config.attributes.get("connection")) is not None:
+    # Dipanggil dari kode (mis. meta-test RLS) dengan koneksi milik pemanggil: URL tidak dibaca
+    # dari settings/.env sehingga migrasi pasti berjalan di database pemanggil.
+    _do_run_migrations(connection)
 else:
     asyncio.run(run_migrations_online())
