@@ -7,6 +7,9 @@ on:
       - "scripts/**"
       - ".agent/control.yaml"
       - ".github/workflows/backend.yml"
+      - "api/**"
+      - "requirements.txt"
+      - "vercel.json"
   push:
     branches: [main]
     paths:
@@ -14,6 +17,9 @@ on:
       - "scripts/**"
       - ".agent/control.yaml"
       - ".github/workflows/backend.yml"
+      - "api/**"
+      - "requirements.txt"
+      - "vercel.json"
   workflow_dispatch:
 
 concurrency:
@@ -51,7 +57,12 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - name: Lint
-        run: uv run ruff check . ../scripts && uv run ruff format --check . ../scripts
+        run: uv run ruff check . ../scripts ../api && uv run ruff format --check . ../scripts ../api
+      - name: requirements.txt (Vercel) sinkron dengan uv.lock
+        run: |
+          uv export --frozen --no-dev --no-hashes --no-emit-project -q -o /tmp/requirements.txt
+          diff <(grep -v '^#' /tmp/requirements.txt) <(grep -v '^#' ../requirements.txt) \
+            || { echo "::error::Jalankan: cd backend && uv export --frozen --no-dev --no-hashes --no-emit-project -o ../requirements.txt"; exit 1; }
       - name: Type-check
         run: uv run mypy app && uv run mypy --strict ../scripts/agent_preflight.py ../scripts/agent_lock.py
       - name: Test
