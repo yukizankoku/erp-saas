@@ -22,7 +22,7 @@
 5. Lalu #4 auth, #6 IAM, #8 menu modular, #9 audit, dst. sesuai dependensi di tiap issue.
 
 ## Menunggu PO
-- #25 P1-23: akun Vercel + Neon (region Singapura).
+- #24 P1-23: akun Vercel + Neon (region Singapura).
 - Pengaturan GitHub: default branch → `main`; "Automatically delete head branches"; proteksi branch `main`.
 - Rilis pertama `develop` → `main` (berisi Fase 0) — butuh persetujuan PO.
 

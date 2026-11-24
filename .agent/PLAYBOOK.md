@@ -63,7 +63,8 @@ dengan satu kalimat. `GO` → tangani hanya PR tersebut (perbaiki CI/merge), lal
 ## B. Laporan harian (dipicu 04:47 setiap hari — read-only, tanpa lock, tanpa coding)
 
 1. `git fetch origin develop` lalu baca `.agent/STATE.md` dan `.agent/runs/` 24 jam terakhir (dari `origin/develop`).
-2. Kumpulkan via GitHub: PR merged & terbuka 24 jam terakhir, issue `needs-po` & `blocked`, status CI terakhir di `develop`,
+2. Kumpulkan via GitHub: PR merged & terbuka 24 jam terakhir, issue `needs-po` & `blocked`, status CI PR terakhir
+   (CI berjalan di PR, bukan di push ke `develop`),
    progres fase (issue `phase:<n>` tertutup vs total).
 3. Buat issue `Laporan Harian — YYYY-MM-DD` berlabel `daily-report` mengikuti template PRD Lampiran B.
    Ringkasan maks. 3 kalimat; setiap pertanyaan ke PO disertai opsi + rekomendasi. Tanpa secret/data pribadi.
