@@ -91,17 +91,21 @@ class TenantRepository[T: BaseRecord]:
         for key, value in values.items():
             setattr(record, key, value)
         record.tenant_id = tenant_id
-        self.session.add(record)
-        try:
+        if "id" not in values:
+            # Id dibuat server (UUIDv7) → tidak bisa bentrok; tanpa savepoint tambahan.
+            self.session.add(record)
             await self.session.flush()
+            return record
+        try:
+            # Id dari klien (offline) bisa bentrok: insert diisolasi dalam savepoint agar hanya
+            # insert ini yang batal; tulisan lain di transaksi pemanggil tetap utuh (atomisitas).
+            async with self.session.begin_nested():
+                self.session.add(record)
+                await self.session.flush()
         except IntegrityError as exc:
             if not self._is_primary_key_violation(exc):
                 raise
-            # Flush gagal → transaksi tak bisa dipakai lagi; rollback agar sesi siap pakai. Di dalam
-            # savepoint pemanggil cukup savepoint itu yang batal (`async with begin_nested()`),
-            # transaksi induk tetap utuh. Pesan sengaja sama untuk id tenant sendiri/lain.
-            if not self.session.in_nested_transaction():
-                await self.session.rollback()
+            # Pesan sengaja sama untuk id milik tenant sendiri maupun tenant lain (tanpa oracle).
             raise RecordConflict() from exc
         return record
 

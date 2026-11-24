@@ -96,7 +96,7 @@ async def test_create_with_id_owned_by_other_tenant_raises_domain_error(
     async with session_factory() as session:
         with tenant_context(uuid7()), pytest.raises(RecordConflict) as exc:
             await ItemRepository(session).create({"id": shared_id, "name": "clash"})
-        assert not session.in_transaction()  # sudah di-rollback; sesi siap dipakai lagi
+        assert session.in_transaction()  # hanya savepoint insert yang batal; transaksi tetap aktif
     assert (exc.value.status_code, exc.value.code) == (409, "record.conflict")
     assert "clash" not in str(exc.value) and str(shared_id) not in str(exc.value)
     row = (await _admin_rows(admin_engine, shared_id))[0]
@@ -113,7 +113,7 @@ async def test_create_with_duplicate_id_same_tenant_is_rejected(
             with pytest.raises(RecordConflict) as exc:
                 await ItemRepository(session).create({"id": dup, "name": "again"})
             assert (exc.value.status_code, exc.value.code) == (409, "record.conflict")
-            # Sesi sudah di-rollback: transaksi berikutnya langsung dapat dipakai.
+            # Hanya insert yang bentrok yang batal (savepoint); transaksi tetap dapat dipakai.
             again = await ItemRepository(session).create({"name": "next"})
             await session.commit()
     assert [r["name"] for r in await _admin_rows(admin_engine, dup)] == ["item"]
@@ -135,6 +135,25 @@ async def test_create_conflict_inside_savepoint_keeps_outer_transaction(
             assert await repo.get(outer.id) is not None
             await session.commit()
     assert [r["name"] for r in await _admin_rows(admin_engine, outer.id)] == ["outer"]
+
+
+async def test_create_conflict_keeps_earlier_writes_of_the_caller_transaction(
+    session_factory: SessionFactory, admin_engine: AsyncEngine
+) -> None:
+    """Review security: konflik id tidak boleh me-rollback tulisan lain di transaksi pemanggil."""
+    tenant, dup = uuid7(), uuid7()
+    await _create(session_factory, tenant, id=dup)
+    async with session_factory() as session:
+        repo = ItemRepository(session)
+        with tenant_context(tenant):
+            before = await repo.create({"name": "before"})
+            with pytest.raises(RecordConflict):
+                await repo.create({"id": dup, "name": "dup"})
+            after = await repo.create({"name": "after"})
+            await session.commit()
+    assert [r["name"] for r in await _admin_rows(admin_engine, before.id)] == ["before"]
+    assert [r["name"] for r in await _admin_rows(admin_engine, after.id)] == ["after"]
+    assert [r["name"] for r in await _admin_rows(admin_engine, dup)] == ["item"]
 
 
 async def test_create_with_other_unique_violation_is_not_reported_as_id_conflict(
