@@ -6,7 +6,7 @@
 
 | Atribut | Nilai |
 |---|---|
-| Versi dokumen | 0.2 — Disetujui PO |
+| Versi dokumen | 0.3 — Disetujui PO |
 | Tanggal | 24 November 2026 |
 | Status | Disetujui Product Owner (PO) pada 24 November 2026 — perubahan berikutnya lewat PR (gerbang §5.8 #7) |
 | Product Owner | Pemilik repository |
@@ -181,9 +181,9 @@ Pengembangan dikerjakan oleh **tim AI agent (Claude Code di cloud)** secara otom
 
 | Aturan | Detail |
 |---|---|
-| **Dilarang bekerja** | Senin–Jumat 09:00–18:00 WIB (jam kerja PO) |
-| **Boleh bekerja** | Senin–Kamis 18:00 → 09:00 hari berikutnya; Jumat 18:00 → Senin 09:00 (akhir pekan penuh) |
-| **Hard stop** | 08:30 WIB pada pagi hari kerja (Senin–Jumat): run harus sudah commit, push, dan melepas lock |
+| **Dilarang bekerja** | Senin–Jumat 05:00–18:00 WIB (jam kerja PO 09:00–18:00 + jeda pagi; keputusan PO 24 Nov 2026) |
+| **Boleh bekerja** | Senin–Kamis 18:00 → 05:00 hari berikutnya; Jumat 18:00 → Senin 05:00 (akhir pekan penuh) |
+| **Hard stop** | 05:00 WIB pada pagi hari kerja (Senin–Jumat): berhenti mengambil tugas baru pukul 04:30; semua commit, push, dan pelepasan lock selesai sebelum 05:00 |
 | **Hari libur nasional** | Opsional, diatur di `.agent/control.yaml`; bila diaktifkan agent boleh bekerja seharian |
 | **Kerja di jam kerja** | Hanya jika PO memerintahkan langsung (OVERRIDE) |
 
@@ -192,11 +192,11 @@ Pengembangan dikerjakan oleh **tim AI agent (Claude Code di cloud)** secara otom
 | Waktu (WIB) | Hari | Jenis | Ekspresi cron |
 |---|---|---|---|
 | 18:07 | Sen–Jum | Work run | `CRON_TZ=Asia/Jakarta 7 18 * * 1-5` |
-| 00:07 & 05:07 | Setiap hari | Work run | `CRON_TZ=Asia/Jakarta 7 0,5 * * *` |
-| 10:07, 15:07, 19:07 | Sab–Min | Work run | `CRON_TZ=Asia/Jakarta 7 10,15,19 * * 0,6` |
-| 08:37 | Setiap hari | Laporan harian | `CRON_TZ=Asia/Jakarta 37 8 * * *` |
+| 00:07 | Setiap hari | Work run | `CRON_TZ=Asia/Jakarta 7 0 * * *` |
+| 05:07, 10:07, 15:07, 19:07 | Sab–Min | Work run | `CRON_TZ=Asia/Jakarta 7 5,10,15,19 * * 0,6` |
+| 04:47 | Setiap hari | Laporan harian (read-only, tanpa lock) | `CRON_TZ=Asia/Jakarta 47 4 * * *` |
 
-Jarak antar-run ±4–6 jam, sejalan dengan batas pemakaian paket langganan yang dihitung per jendela waktu (±5 jam) ditambah batas
+Hari kerja: 2 run per malam (18:07 dan 00:07). Akhir pekan: 5 run per hari. Jarak antar-run ±4–6 jam, sejalan dengan batas pemakaian paket langganan yang dihitung per jendela waktu (±5 jam) ditambah batas
 mingguan. Jika batas pemakaian habis di tengah run, pekerjaan sudah ter-checkpoint per tugas dan dilanjutkan run berikutnya.
 
 ### 5.3 Kill Switch — "Berhenti Pakai Token"
@@ -219,9 +219,10 @@ mode: active              # active | paused | stopped | hemat
 timezone: Asia/Jakarta
 blocked_window:           # jam kerja PO — agent dilarang bekerja
   days: [mon, tue, wed, thu, fri]
-  start: "09:00"
+  start: "05:00"
   end: "18:00"
-hard_stop_weekday: "08:30"
+hard_stop_weekday: "05:00"
+stop_new_tasks_weekday: "04:30"
 work_on_public_holidays: true
 public_holidays: []       # mis. ["2026-12-25"]
 max_tasks_per_run: 3
@@ -234,8 +235,11 @@ Pre-flight harus semurah mungkin: satu skrip `scripts/agent_preflight.py` mengem
 
 1. Baca `control.yaml` → `paused`/`stopped` → **NO-GO**.
 2. Cek waktu WIB terhadap `blocked_window` (dan daftar hari libur) → di dalam jam kerja → **NO-GO**.
-3. Cek `.agent/LOCK` → ada run lain yang aktif (< 4 jam) → **NO-GO**.
-4. **GO** → ambil lock, lanjutkan.
+3. Cek lock (branch git `agent/lock`) → ada run lain yang aktif (< 6 jam) → **NO-GO**.
+4. **GO** → ambil lock (`scripts/agent_lock.py acquire`), cetak *deadline* run, lanjutkan.
+
+**Deadline run** = waktu run terjadwal berikutnya − 15 menit, atau hard stop (mana yang lebih awal); berhenti mengambil
+tugas baru 30 menit sebelum deadline. Dengan begitu run tidak pernah tumpang tindih walau lock gagal.
 
 ### 5.5 Struktur Tim Agent
 
@@ -282,7 +286,7 @@ migrasi yang menyentuh RLS, kode enkripsi, payroll, API key, upload file, dan te
 
 ### 5.7 Laporan Harian
 
-- Dibuat setiap pagi **08:37 WIB** oleh run khusus laporan (tier B, tanpa coding).
+- Dibuat setiap hari **04:47 WIB** (sebelum hard stop, sudah tersedia saat PO bangun) oleh run khusus laporan (tier B, tanpa coding, tanpa lock).
 - **Saluran:** GitHub Issue berlabel `daily-report` berjudul `Laporan Harian — YYYY-MM-DD` (GitHub mengirim notifikasi ke email/HP PO)
   + notifikasi push ringkas dari scheduled task. Opsi tambahan: email (butuh connector).
 - Bahasa Indonesia; ringkasan muat dalam satu layar HP, detail di bawahnya. Template: Lampiran B.
@@ -351,10 +355,11 @@ desain UI tersedia (bila ada UI).
 ```
 .agent/
 ├── control.yaml   # mode & jam kerja (kill switch)
-├── LOCK           # penanda run aktif (dibuat/dihapus oleh run)
 ├── STATE.md       # status terkini: fase, tugas berjalan, keputusan terakhir, blocker (≤ 150 baris)
 └── runs/          # catatan singkat per run (dipangkas setelah 30 hari)
 ```
+
+**Lock antar-run:** branch git `agent/lock` (commit tanpa induk berisi run ID & waktu) — dibuat/dihapus atomik oleh `scripts/agent_lock.py`, tidak mengotori riwayat `develop`.
 
 **Backlog:** GitHub Issues + Milestone per fase + label (`module:*`, `type:*`, `priority:*`, `phase:*`, `status:*`,
 `needs-po`, `blocked`, `daily-report`).
@@ -1428,7 +1433,7 @@ Bug terbuka: 0 kritis, 2 minor · Temuan keamanan: 0
 Preview develop: (tautan)
 
 ## ⚙️ Pemakaian agent
-Run: 3 (18:07, 00:07, 05:07) · Durasi total ± 6 jam
+Run: 2 (18:07, 00:07) · Durasi total ± 9 jam
 Sub-agent dipanggil: Backend ×4, QA ×3, Security ×1 · Mode: active
 
 ## 📅 Rencana run berikutnya
@@ -1446,3 +1451,4 @@ Sub-agent dipanggil: Backend ×4, QA ×3, Security ×1 · Mode: active
 |---|---|---|---|
 | 0.1 | 2026-11-24 | Draft awal | PM Agent |
 | 0.2 | 2026-11-24 | Semua rekomendasi disetujui PO; §16 menjadi daftar keputusan; status stack menjadi "Ditetapkan" | PM Agent |
+| 0.3 | 2026-11-24 | Keputusan PO: hard stop hari kerja 05:00 WIB, run 05:07 hari kerja dihapus, laporan harian 04:47; deadline per run; lock via branch `agent/lock` | PM Agent |
