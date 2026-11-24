@@ -25,5 +25,3 @@ dev-dist/
 .vscode/*
 !.vscode/extensions.json
 
-# Agent
-.agent/LOCK
