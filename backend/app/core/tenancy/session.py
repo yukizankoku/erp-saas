@@ -6,6 +6,11 @@ sehingga tidak bocor antar klien di PgBouncer mode transaksi (Neon pooled). **Di
 atau `set_config(..., false)` level sesi untuk `app.*`. Tanpa konteks → tidak di-set → policy RLS
 membandingkan dengan NULL → 0 baris & INSERT/UPDATE ditolak (fail-closed).
 
+Savepoint (`begin_nested`) tidak pernah mengikat atau memindah tenant: `set_config` di dalam
+savepoint dibatalkan oleh `ROLLBACK TO SAVEPOINT` sedangkan `session.info` tidak, sehingga binding
+dan GUC tidak lagi sinkron (query diam-diam 0 baris, atau berjalan sebagai tenant lain). Savepoint
+mewarisi binding transaksi induk; konteks tenant yang berbeda → `TenantRebindError`.
+
 Listener terdaftar global pada `Session` (Session sinkron di balik `AsyncSession`) saat modul ini
 diimpor; `app.framework.repository` mengimpornya sehingga setiap pemakai repository terlindungi.
 """
@@ -22,18 +27,31 @@ SESSION_INFO_KEY = "rls_tenant_id"
 SET_TENANT_SQL = text("SELECT set_config('app.tenant_id', :tid, true)")
 
 
-class TenantRebindError(RuntimeError):
-    """Transaksi yang sudah terikat ke satu tenant dipakai untuk tenant lain."""
+_ALREADY_BOUND = "transaction is already bound to another tenant; commit/rollback before switching"
+_SAVEPOINT_BIND = (
+    "a savepoint cannot bind or switch the tenant of its transaction; "
+    "bind the tenant before begin_nested()"
+)
 
-    def __init__(self) -> None:
-        super().__init__(
-            "transaction is already bound to another tenant; commit/rollback before switching"
-        )
+
+class TenantRebindError(RuntimeError):
+    """Transaksi yang sudah terikat ke satu tenant dipakai untuk tenant lain, atau tenant
+    hendak diikat/dipindah dari dalam savepoint."""
+
+    def __init__(self, message: str = _ALREADY_BOUND) -> None:
+        super().__init__(message)
 
 
 @event.listens_for(Session, "after_begin")
 def _bind_tenant(session: Session, transaction: SessionTransaction, connection: Connection) -> None:
     ctx = get_context()
+    if transaction.nested:
+        # SAVEPOINT: GUC & info diwarisi dari transaksi induk dan tidak disentuh. Konteks tenant
+        # lain (termasuk transaksi induk yang belum terikat) ditolak; savepoint dibatalkan oleh
+        # pemanggil (`async with session.begin_nested()` → ROLLBACK TO SAVEPOINT).
+        if ctx is not None and ctx.tenant_id != session.info.get(SESSION_INFO_KEY):
+            raise TenantRebindError(_SAVEPOINT_BIND)
+        return
     session.info[SESSION_INFO_KEY] = ctx.tenant_id if ctx is not None else None
     if ctx is not None:
         connection.execute(SET_TENANT_SQL, {"tid": str(ctx.tenant_id)})
@@ -44,15 +62,18 @@ async def ensure_tenant_bound(session: AsyncSession) -> UUID:
 
     Menangani transaksi yang dimulai sebelum konteks diset (mis. lookup autentikasi): tanpa
     pengikatan ulang, query pertama sesudahnya diam-diam mengembalikan 0 baris. Berpindah dari
-    satu tenant ke tenant lain di transaksi yang sama ditolak (satu transaksi per tenant).
+    satu tenant ke tenant lain di transaksi yang sama ditolak (satu transaksi per tenant), begitu
+    pula pengikatan pertama di dalam savepoint (akan batal bersama `ROLLBACK TO SAVEPOINT`).
     """
     tenant_id = require_tenant_id()
-    await session.connection()  # memulai transaksi bila belum → after_begin berjalan
+    await session.connection()  # memulai transaksi/savepoint bila belum → after_begin berjalan
     bound = session.info.get(SESSION_INFO_KEY)
     if bound == tenant_id:
         return tenant_id
     if bound is not None:
         raise TenantRebindError()
+    if session.in_nested_transaction():
+        raise TenantRebindError(_SAVEPOINT_BIND)
     await session.execute(SET_TENANT_SQL, {"tid": str(tenant_id)})
     session.info[SESSION_INFO_KEY] = tenant_id
     return tenant_id

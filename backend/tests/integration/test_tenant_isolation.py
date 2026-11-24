@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.ids import uuid7
 from app.core.tenancy.context import TenantContextMissing, tenant_context
+from app.core.tenancy.rls import tenant_rls_sql
 from app.core.tenancy.session import SESSION_INFO_KEY, TenantRebindError, ensure_tenant_bound
 from app.framework.errors import RecordNotFound, VersionConflict
 from app.framework.repository import TenantRepository
@@ -22,6 +23,7 @@ from tests.integration.models import Item, ItemRepository
 
 SessionFactory = async_sessionmaker[AsyncSession]
 RLS_VIOLATION = "42501"  # insufficient_privilege: "new row violates row-level security policy"
+SETTING = text("SELECT current_setting('app.tenant_id', true)")
 
 
 async def _create(
@@ -283,6 +285,149 @@ async def test_ensure_tenant_bound_refuses_switching_tenant_mid_transaction(
                 await repo.get(row_b)
             await session.rollback()
             assert await repo.get(row_b) is not None  # transaksi baru → terikat ke B
+
+
+async def test_context_is_cleared_after_rollback_on_same_connection(
+    app_engine: AsyncEngine, admin_engine: AsyncEngine
+) -> None:
+    tenant = uuid7()
+    await _seed(admin_engine, tenant)
+    async with app_engine.connect() as conn:
+        session = AsyncSession(bind=conn)
+        pid = await session.scalar(text("SELECT pg_backend_pid()"))
+        await session.rollback()
+        with tenant_context(tenant):
+            assert await session.scalar(SETTING) == str(tenant)
+            assert await session.scalar(text("SELECT count(*) FROM rls_test_items")) == 1
+            await session.rollback()
+        # Koneksi fisik yang sama, transaksi baru tanpa konteks: tidak ada sisa tenant.
+        assert await session.scalar(text("SELECT pg_backend_pid()")) == pid
+        assert await session.scalar(SETTING) == ""
+        assert session.info[SESSION_INFO_KEY] is None
+        assert await session.scalar(text("SELECT count(*) FROM rls_test_items")) == 0
+        await session.close()
+
+
+async def test_force_rls_applies_to_non_superuser_table_owner(admin_engine: AsyncEngine) -> None:
+    """Pemilik tabel tanpa BYPASSRLS (mis. role migrasi) tetap terkena RLS karena FORCE."""
+    table, owner = "rls_owner_probe", "rls_owner_probe_role"
+    tenant_a, tenant_b = uuid7(), uuid7()
+    count = text("SELECT count(*) FROM rls_owner_probe")
+    tenants = text("SELECT array_agg(DISTINCT tenant_id) FROM rls_owner_probe")
+    insert = text("INSERT INTO rls_owner_probe (id, tenant_id) VALUES (:id, :tid)")
+    set_tenant = text("SELECT set_config('app.tenant_id', :tid, true)")
+    # Satu transaksi yang di-rollback: role, tabel, dan data uji ikut batal.
+    async with admin_engine.connect() as conn:
+        await conn.execute(text(f"CREATE ROLE {owner} NOLOGIN NOSUPERUSER NOBYPASSRLS"))
+        await conn.execute(
+            text(f"CREATE TABLE {table} (id uuid PRIMARY KEY, tenant_id uuid NOT NULL)")
+        )
+        await conn.execute(text(f"ALTER TABLE {table} OWNER TO {owner}"))
+        for statement in tenant_rls_sql(table):
+            await conn.execute(text(statement))
+        for tenant in (tenant_a, tenant_b):  # superuser melewati RLS saat seed
+            await conn.execute(insert, {"id": uuid7(), "tid": tenant})
+
+        await conn.execute(text(f"SET LOCAL ROLE {owner}"))
+        row = (
+            await conn.execute(
+                text(
+                    "SELECT current_user, r.rolsuper, r.rolbypassrls, c.relowner = r.oid "
+                    "FROM pg_roles r, pg_class c "
+                    "WHERE r.rolname = current_user AND c.oid = to_regclass(:t)"
+                ),
+                {"t": table},
+            )
+        ).one()
+        assert tuple(row) == (owner, False, False, True)
+
+        assert await conn.scalar(count) == 0  # pemilik tanpa konteks: 0 baris
+        with pytest.raises(DBAPIError) as exc:
+            async with conn.begin_nested():
+                await conn.execute(insert, {"id": uuid7(), "tid": tenant_a})
+        _assert_rls_violation(exc)
+
+        await conn.execute(set_tenant, {"tid": str(tenant_a)})
+        assert await conn.scalar(tenants) == [tenant_a]
+
+        # Kontrol: tanpa FORCE, pemilik yang sama melihat semua baris walau tanpa konteks.
+        await conn.execute(set_tenant, {"tid": ""})
+        await conn.execute(text(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY"))
+        assert await conn.scalar(count) == 2
+        await conn.rollback()
+
+    async with admin_engine.connect() as conn:
+        assert await conn.scalar(text("SELECT to_regclass(:t)"), {"t": table}) is None
+
+
+# --- savepoint (begin_nested) --------------------------------------------------------------
+
+
+async def test_savepoint_cannot_switch_tenant_of_bound_transaction(
+    session_factory: SessionFactory, admin_engine: AsyncEngine
+) -> None:
+    tenant_a, tenant_b = uuid7(), uuid7()
+    row_a = await _seed(admin_engine, tenant_a)
+    row_b = await _seed(admin_engine, tenant_b)
+    async with session_factory() as session:
+        repo = ItemRepository(session)
+        with tenant_context(tenant_a):
+            assert await repo.get(row_a) is not None
+        with tenant_context(tenant_b):
+            for operation in (lambda: session.scalar(SETTING), lambda: repo.get(row_b)):
+                with pytest.raises(TenantRebindError):
+                    async with session.begin_nested():  # savepoint di-rollback oleh `async with`
+                        await operation()
+            # Sesudah savepoint batal: tidak ada binding B yang tersisa (dulu: 0 baris senyap).
+            with pytest.raises(TenantRebindError):
+                await repo.get(row_b)
+        assert session.info[SESSION_INFO_KEY] == tenant_a
+        assert await session.scalar(SETTING) == str(tenant_a)
+        with tenant_context(tenant_a):
+            assert await repo.get(row_a) is not None
+
+
+async def test_first_tenant_bind_inside_savepoint_is_refused(
+    session_factory: SessionFactory, admin_engine: AsyncEngine
+) -> None:
+    tenant = uuid7()
+    row_id = await _seed(admin_engine, tenant)
+    async with session_factory() as session:
+        repo = ItemRepository(session)
+        await session.execute(text("SELECT 1"))  # transaksi dimulai tanpa konteks (lookup auth)
+        # Savepoint dimulai di bawah konteks → ditolak saat savepoint mulai (after_begin).
+        with tenant_context(tenant), pytest.raises(TenantRebindError):
+            async with session.begin_nested():
+                await repo.get(row_id)
+        # Savepoint dimulai tanpa konteks, konteks diset di dalamnya → ensure_tenant_bound menolak.
+        async with session.begin_nested():
+            await session.execute(text("SELECT 1"))
+            with tenant_context(tenant), pytest.raises(TenantRebindError):
+                await ensure_tenant_bound(session)
+        assert session.info[SESSION_INFO_KEY] is None
+        assert await session.scalar(SETTING) is None
+
+        with tenant_context(tenant):
+            # Di luar savepoint pengikatan normal; savepoint sesudahnya mewarisi tenant yang sama.
+            assert await repo.get(row_id) is not None
+            async with session.begin_nested():
+                assert await repo.get(row_id) is not None
+        assert session.info[SESSION_INFO_KEY] == tenant
+
+
+async def test_savepoint_rollback_keeps_tenant_binding(session_factory: SessionFactory) -> None:
+    tenant = uuid7()
+    async with session_factory() as session:
+        repo = ItemRepository(session)
+        with tenant_context(tenant):
+            await repo.create({"name": "outer"})
+            nested = await session.begin_nested()
+            await repo.create({"name": "inner"})
+            await nested.rollback()
+            assert session.info[SESSION_INFO_KEY] == tenant
+            assert await session.scalar(SETTING) == str(tenant)
+            assert [i.name for i in (await repo.list()).items] == ["outer"]
+            await session.commit()
 
 
 # --- soft delete & versi -------------------------------------------------------------------
