@@ -1,0 +1,100 @@
+name: db-provision-roles
+
+# Membuat/memperbarui role `app_runtime` (non-superuser, tanpa BYPASSRLS) di branch Neon `production` — issue #34,
+# ADR 0004, docs/runbooks/db-roles.md. Disetujui PO 25 Nov 2026 (gerbang perubahan model keamanan).
+# Dipicu manual: workflow_dispatch (setelah file ada di branch default) atau push ke branch `ops/provision-db-roles`.
+# Secret wajib: NEON_API_KEY, APP_RUNTIME_DB_PASSWORD (dibuat PO; huruf/angka saja, minimal 24 karakter).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ops/provision-db-roles]
+
+concurrency:
+  group: db-provision-roles
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+      APP_RUNTIME_DB_PASSWORD: ${{ secrets.APP_RUNTIME_DB_PASSWORD }}
+      NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID || 'withered-waterfall-79816375' }}
+      NEON_BRANCH: production
+      DO_NOT_TRACK: "1"
+    steps:
+      - name: Validasi secret
+        run: |
+          [ -n "$NEON_API_KEY" ] || { echo "::error::Secret NEON_API_KEY belum diatur"; exit 1; }
+          [ -n "$APP_RUNTIME_DB_PASSWORD" ] || { echo "::error::Secret APP_RUNTIME_DB_PASSWORD belum diatur"; exit 1; }
+          python3 - <<'PY'
+          import os, re, sys
+          pw = os.environ["APP_RUNTIME_DB_PASSWORD"]
+          if len(pw) < 24 or not re.fullmatch(r"[A-Za-z0-9]+", pw):
+              print("::error::APP_RUNTIME_DB_PASSWORD harus huruf/angka saja, minimal 24 karakter")
+              sys.exit(1)
+          PY
+
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Pasang Neon CLI & psql
+        run: |
+          npm i -g neon@9
+          command -v psql || { sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client; }
+
+      - name: Ambil koneksi owner (direct) dan susun URL app_runtime
+        run: |
+          owner_direct=$(neon connection-string "$NEON_BRANCH" --project-id "$NEON_PROJECT_ID")
+          owner_pooled=$(neon connection-string "$NEON_BRANCH" --project-id "$NEON_PROJECT_ID" --pooled)
+          echo "::add-mask::$owner_direct"; echo "::add-mask::$owner_pooled"
+          for url in "$owner_direct" "$owner_pooled"; do
+            echo "::add-mask::$(python3 -c 'import sys,urllib.parse as u; print(u.urlsplit(sys.argv[1]).password or "")' "$url")"
+          done
+          python3 - "$owner_direct" "$owner_pooled" >> "$GITHUB_ENV" <<'PY'
+          import os, sys, urllib.parse as u
+          pw = os.environ["APP_RUNTIME_DB_PASSWORD"]
+          def as_runtime(url: str) -> str:
+              s = u.urlsplit(url)
+              host = s.hostname + (f":{s.port}" if s.port else "")
+              return u.urlunsplit(s._replace(netloc=f"app_runtime:{u.quote(pw, safe='')}@{host}"))
+          owner_direct, owner_pooled = sys.argv[1], sys.argv[2]
+          print(f"OWNER_DIRECT={owner_direct}")
+          print(f"RUNTIME_DIRECT={as_runtime(owner_direct)}")
+          print(f"RUNTIME_POOLED={as_runtime(owner_pooled)}")
+          PY
+
+      - name: Provisioning role (idempotent)
+        run: |
+          owner=$(psql "$OWNER_DIRECT" -tAc "SELECT current_user")
+          dbname=$(psql "$OWNER_DIRECT" -tAc "SELECT current_database()")
+          echo "owner=$owner database=$dbname branch=$NEON_BRANCH"
+          psql "$OWNER_DIRECT" -q -v owner="$owner" -v dbname="$dbname" \
+            -v app_runtime_password="$APP_RUNTIME_DB_PASSWORD" -f infra/sql/app_runtime.sql
+          echo "Provisioning selesai."
+
+      - name: Verifikasi sebagai owner (runbook §2)
+        run: |
+          psql "$OWNER_DIRECT" -X -c "
+            SELECT r.rolname, r.rolcanlogin, r.rolsuper, r.rolbypassrls, r.rolcreaterole, r.rolcreatedb,
+                   r.rolreplication,
+                   ARRAY(SELECT g.rolname FROM pg_roles g WHERE g.oid <> r.oid
+                         AND pg_has_role(r.oid, g.oid, 'MEMBER') AND (g.rolsuper OR g.rolbypassrls))
+                     AS privileged_memberships,
+                   has_schema_privilege(r.oid, 'public', 'CREATE') AS runtime_can_create
+            FROM pg_roles r WHERE r.rolname = 'app_runtime';"
+
+      - name: Verifikasi login app_runtime (direct & pooled)
+        run: |
+          for kind in RUNTIME_DIRECT RUNTIME_POOLED; do
+            row=$(psql "${!kind}" -tA -F '|' -c \
+              "SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")
+            echo "$kind → $row"
+            [ "$row" = "app_runtime|f|f" ] || { echo "::error::$kind tidak sesuai (harus app_runtime|f|f)"; exit 1; }
+          done
