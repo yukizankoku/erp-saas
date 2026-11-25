@@ -42,15 +42,22 @@ dua kali jalan sebagai owner non-superuser PG16). Password opsional lewat variab
 Sesi agent tidak bisa membuka TCP ke Neon, jadi provisioning dijalankan GitHub Actions
 (`.github/workflows/db-provision-roles.yml`) pada branch Neon `production`:
 
-1. PO membuat password acak **huruf/angka saja, ≥ 24 karakter** dan menyimpannya sebagai secret repo
-   `APP_RUNTIME_DB_PASSWORD` (password tidak pernah melewati agent, chat, issue, atau log).
-2. Picu workflow: push ke branch `ops/provision-db-roles` atau *Run workflow* (bila file sudah ada di branch default).
-3. Workflow menjalankan SQL sebagai owner, verifikasi §2, lalu login sebagai `app_runtime` lewat koneksi direct &
-   pooled dan memastikan `app_runtime|f|f`.
-4. PO mengganti `DATABASE_URL` di Vercel dengan connection string pooled role `app_runtime`
-   (host `-pooler` yang sama, user `app_runtime`, password dari langkah 1), lalu Redeploy.
-   `DATABASE_URL_UNPOOLED` (migrasi) tetap memakai owner.
-5. Jalankan ulang workflow setelah migrasi tabel pertama (hak `alembic_version`, lihat di bawah).
+1. **Sekali saja — GitHub Environment `db-production`** (Settings → Environments → New environment):
+   aktifkan *Required reviewers* = akun PO. Setiap run workflow menunggu persetujuan PO di halaman Actions.
+2. PO membuat password acak **huruf/angka saja, minimal 24 karakter** dan menyimpannya sebagai **environment secret**
+   `APP_RUNTIME_DB_PASSWORD` di `db-production` (password tidak pernah melewati agent, chat, issue, atau log).
+   Secret repo `NEON_API_KEY` (dipakai juga oleh `neon-smoke`) harus sudah ada.
+3. Picu workflow: push ke branch `ops/provision-db-roles` atau *Run workflow* (bila file sudah ada di branch default),
+   lalu PO menyetujui run di GitHub (*Review deployments* → Approve).
+4. Workflow menjalankan SQL sebagai owner (password hanya lewat env `PGPASSWORD`/`\getenv`, bukan argv), verifikasi §2,
+   lalu login sebagai `app_runtime` lewat koneksi direct dan pooled dan memastikan `app_runtime|f|f`.
+5. PO mengganti `DATABASE_URL` di Vercel dengan connection string pooled role `app_runtime`
+   (host `-pooler` yang sama, user `app_runtime`, password dari langkah 2), tandai variabel sebagai **Sensitive**,
+   lalu Redeploy. `DATABASE_URL_UNPOOLED` (migrasi) tetap memakai owner.
+6. Jalankan ulang workflow setelah migrasi tabel pertama (hak `alembic_version`, lihat di bawah).
+
+**Rotasi password:** ganti secret `APP_RUNTIME_DB_PASSWORD` → jalankan ulang workflow (setujui) → perbarui
+`DATABASE_URL` di Vercel → Redeploy. Selama jeda singkat itu koneksi aplikasi dengan password lama akan ditolak.
 
 **Setelah migrasi pertama:** `alembic_version` dibuat owner oleh `alembic upgrade head` pertama, dan `ALTER DEFAULT
 PRIVILEGES` di atas otomatis memberi `INSERT, UPDATE, DELETE` ke `app_runtime`. Bila skrip dijalankan sebelum migrasi

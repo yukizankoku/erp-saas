@@ -68,8 +68,12 @@ BEGIN
 END
 $$;
 
--- Password (opsional): dikirim lewat variabel psql `app_runtime_password`, tidak pernah ditulis di file/log.
--- Contoh: psql "$OWNER_URL" -v owner=neondb_owner -v dbname=neondb -v app_runtime_password="$PW" -f app_runtime.sql
+-- Password (opsional): dibaca dari environment variable APP_RUNTIME_DB_PASSWORD (psql >= 15, tidak lewat argv),
+-- atau dari variabel psql `app_runtime_password`. Tidak pernah ditulis di file/log.
+\if :{?app_runtime_password}
+\else
+\getenv app_runtime_password APP_RUNTIME_DB_PASSWORD
+\endif
 \if :{?app_runtime_password}
 ALTER ROLE app_runtime PASSWORD :'app_runtime_password';
 \endif
