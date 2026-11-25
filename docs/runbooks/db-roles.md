@@ -51,13 +51,14 @@ Sesi agent tidak bisa membuka TCP ke Neon, jadi provisioning dijalankan GitHub A
    lalu PO menyetujui run di GitHub (*Review deployments* → Approve).
 4. Workflow menjalankan SQL sebagai owner (password hanya lewat env `PGPASSWORD`/`\getenv`, bukan argv), verifikasi §2,
    lalu login sebagai `app_runtime` lewat koneksi direct dan pooled dan memastikan `app_runtime|f|f`.
-5. PO mengganti `DATABASE_URL` di Vercel dengan connection string pooled role `app_runtime`
-   (host `-pooler` yang sama, user `app_runtime`, password dari langkah 2), tandai variabel sebagai **Sensitive**,
-   lalu Redeploy. `DATABASE_URL_UNPOOLED` (migrasi) tetap memakai owner.
+5. PO menambahkan `APP_DATABASE_URL` di Vercel (variabel baru — `DATABASE_URL` milik integrasi Neon tidak bisa diubah)
+   berisi connection string pooled role `app_runtime`
+   (host `-pooler` yang sama, user `app_runtime`, password dari langkah 2), tandai **Sensitive**, lalu Redeploy.
+   Aplikasi mengutamakan `APP_DATABASE_URL`; `DATABASE_URL_UNPOOLED` (migrasi) tetap memakai owner.
 6. Jalankan ulang workflow setelah migrasi tabel pertama (hak `alembic_version`, lihat di bawah).
 
 **Rotasi password:** ganti secret `APP_RUNTIME_DB_PASSWORD` → jalankan ulang workflow (setujui) → perbarui
-`DATABASE_URL` di Vercel → Redeploy. Selama jeda singkat itu koneksi aplikasi dengan password lama akan ditolak.
+`APP_DATABASE_URL` di Vercel → Redeploy. Selama jeda singkat itu koneksi aplikasi dengan password lama akan ditolak.
 
 **Setelah migrasi pertama:** `alembic_version` dibuat owner oleh `alembic upgrade head` pertama, dan `ALTER DEFAULT
 PRIVILEGES` di atas otomatis memberi `INSERT, UPDATE, DELETE` ke `app_runtime`. Bila skrip dijalankan sebelum migrasi
