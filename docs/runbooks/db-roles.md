@@ -34,79 +34,30 @@ non-superuser (mis. `neondb_owner`) ditolak bila menyebut atribut itu di `ALTER 
 default `CREATE ROLE` sudah aman; DO-block memverifikasinya dan menghentikan skrip bila tidak (perbaikan butuh
 superuser — eskalasi ke PO). Teruji di PostgreSQL 16 dengan owner non-superuser (CREATEROLE CREATEDB), dua kali jalan.
 
-`app_runtime.sql`:
+SQL lengkap: [`infra/sql/app_runtime.sql`](../../infra/sql/app_runtime.sql) (satu-satunya sumber; idempotent; teruji
+dua kali jalan sebagai owner non-superuser PG16). Password opsional lewat variabel psql `app_runtime_password`.
 
-```sql
-\set ON_ERROR_STOP on
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_runtime') THEN
-    CREATE ROLE app_runtime LOGIN;  -- default: NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION
-  END IF;
-END
-$$;
+### Neon produksi — lewat workflow `db-provision-roles` (issue #34)
 
--- Hentikan bila role (sudah ada / dibuat pihak lain) dapat melewati RLS atau mengelola role/database.
-DO $$
-DECLARE
-  r record;
-  privileged text[];
-BEGIN
-  SELECT oid, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolreplication
-    INTO STRICT r FROM pg_roles WHERE rolname = 'app_runtime';
-  IF r.rolsuper OR r.rolbypassrls OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication THEN
-    RAISE EXCEPTION 'app_runtime has unsafe attributes (super=%, bypassrls=%, createrole=%, createdb=%, replication=%)',
-      r.rolsuper, r.rolbypassrls, r.rolcreaterole, r.rolcreatedb, r.rolreplication;
-  END IF;
-  SELECT array_agg(g.rolname::text ORDER BY g.rolname) INTO privileged
-    FROM pg_roles g
-   WHERE g.oid <> r.oid AND pg_has_role(r.oid, g.oid, 'MEMBER')
-     AND (g.rolsuper OR g.rolbypassrls OR g.rolcreaterole OR g.rolcreatedb OR g.rolreplication);
-  IF privileged IS NOT NULL THEN
-    RAISE EXCEPTION 'app_runtime is a member of privileged roles: %', privileged;
-  END IF;
-END
-$$;
-ALTER ROLE app_runtime LOGIN;
+Sesi agent tidak bisa membuka TCP ke Neon, jadi provisioning dijalankan GitHub Actions
+(`.github/workflows/db-provision-roles.yml`) pada branch Neon `production`:
 
-GRANT CONNECT ON DATABASE :"dbname" TO app_runtime;
--- PostgreSQL < 15 (dan database hasil upgrade darinya) memberi CREATE di schema public ke PUBLIC.
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-GRANT USAGE ON SCHEMA public TO app_runtime;
-REVOKE CREATE ON SCHEMA public FROM app_runtime;
+1. **Sekali saja — GitHub Environment `db-production`** (Settings → Environments → New environment):
+   aktifkan *Required reviewers* = akun PO. Setiap run workflow menunggu persetujuan PO di halaman Actions.
+2. PO membuat password acak **huruf/angka saja, minimal 24 karakter** dan menyimpannya sebagai **environment secret**
+   `APP_RUNTIME_DB_PASSWORD` di `db-production` (password tidak pernah melewati agent, chat, issue, atau log).
+   Secret repo `NEON_API_KEY` (dipakai juga oleh `neon-smoke`) harus sudah ada.
+3. Picu workflow: push ke branch `ops/provision-db-roles` atau *Run workflow* (bila file sudah ada di branch default),
+   lalu PO menyetujui run di GitHub (*Review deployments* → Approve).
+4. Workflow menjalankan SQL sebagai owner (password hanya lewat env `PGPASSWORD`/`\getenv`, bukan argv), verifikasi §2,
+   lalu login sebagai `app_runtime` lewat koneksi direct dan pooled dan memastikan `app_runtime|f|f`.
+5. PO mengganti `DATABASE_URL` di Vercel dengan connection string pooled role `app_runtime`
+   (host `-pooler` yang sama, user `app_runtime`, password dari langkah 2), tandai variabel sebagai **Sensitive**,
+   lalu Redeploy. `DATABASE_URL_UNPOOLED` (migrasi) tetap memakai owner.
+6. Jalankan ulang workflow setelah migrasi tabel pertama (hak `alembic_version`, lihat di bawah).
 
--- Tabel & sequence yang sudah ada.
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_runtime;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO app_runtime;
--- Tabel & sequence yang dibuat migrasi berikutnya oleh owner.
-ALTER DEFAULT PRIVILEGES FOR ROLE :"owner" IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE :"owner" IN SCHEMA public
-  GRANT USAGE, SELECT ON SEQUENCES TO app_runtime;
-
--- Aplikasi tidak boleh mengubah status migrasi.
-DO $$
-BEGIN
-  IF to_regclass('public.alembic_version') IS NOT NULL THEN
-    REVOKE INSERT, UPDATE, DELETE ON public.alembic_version FROM app_runtime;
-  END IF;
-END
-$$;
-
--- Verifikasi akhir: gagal = skrip berhenti dengan error.
-DO $$
-BEGIN
-  IF has_schema_privilege('public', 'public', 'CREATE')
-     OR has_schema_privilege('app_runtime', 'public', 'CREATE') THEN
-    RAISE EXCEPTION 'schema public is still writable (CREATE) by PUBLIC or app_runtime';
-  END IF;
-  IF COALESCE(has_table_privilege('app_runtime', to_regclass('public.alembic_version'),
-                                  'INSERT, UPDATE, DELETE, TRUNCATE'), false) THEN
-    RAISE EXCEPTION 'app_runtime can still modify public.alembic_version';
-  END IF;
-END
-$$;
-```
+**Rotasi password:** ganti secret `APP_RUNTIME_DB_PASSWORD` → jalankan ulang workflow (setujui) → perbarui
+`DATABASE_URL` di Vercel → Redeploy. Selama jeda singkat itu koneksi aplikasi dengan password lama akan ditolak.
 
 **Setelah migrasi pertama:** `alembic_version` dibuat owner oleh `alembic upgrade head` pertama, dan `ALTER DEFAULT
 PRIVILEGES` di atas otomatis memberi `INSERT, UPDATE, DELETE` ke `app_runtime`. Bila skrip dijalankan sebelum migrasi
