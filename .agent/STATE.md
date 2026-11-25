@@ -13,6 +13,8 @@
 - #35 bentrok id → 409 (ikut PR #33).
 - Neon: `neon init` + `neon deploy` OK; backend tersambung (PR #30) — `DATABASE_URL` pooled / `DATABASE_URL_UNPOOLED` direct.
 - Vercel: preview deploy hijau (PR #32): web statis + FastAPI di `/api/*`, region sin1.
+- Neon end-to-end terbukti lewat `neon-smoke` (PR #31): migrasi + /health/db ok.
+- #34 role `app_runtime` dibuat di Neon produksi (PR #39): direct & pooled → app_runtime|f|f.
 
 ## Berikutnya (urutan)
 1. #36 P1-01d filter tenant otomatis di level ORM (wajib sebelum tabel bisnis pertama).
@@ -21,10 +23,9 @@
 4. #3 P1-02 Tenant/company/branch/warehouse (bergantung #36, #37).
 
 ## Menunggu PO
-- PR #31 `neon-smoke`: tambahkan secret repo `NEON_API_KEY`, lalu PM menjalankan ulang job sebagai bukti akhir Neon.
-- #34 role `app_runtime` di Neon (gerbang keamanan) — RLS belum efektif di produksi sampai selesai.
-- Vercel: set env `DATABASE_URL` (pooled Neon) + `DATABASE_POOL_SIZE=0`.
-- GitHub: default branch → `main`; "Automatically delete head branches"; proteksi `main`.
+- Vercel: ganti `DATABASE_URL` ke URL pooled role `app_runtime` (Sensitive) lalu Redeploy — sampai itu, aplikasi di
+  Vercel masih memakai `neondb_owner` (BYPASSRLS → RLS tidak berlaku).
+- GitHub Environment `db-production`: pastikan *Required reviewers* aktif (run 25 Nov berjalan tanpa jeda persetujuan).
 
 ## Catatan teknis
 - Hemat kuota: kerjakan tugas di sesi dengan riwayat pendek (runner); sesi panjang yang bangun setelah jeda
