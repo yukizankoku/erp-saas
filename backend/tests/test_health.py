@@ -42,6 +42,20 @@ def test_unpooled_alias_from_neon_env_pull(monkeypatch) -> None:
         get_settings.cache_clear()
 
 
+def test_app_database_url_takes_precedence(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://neondb_owner:x@ep-a-pooler.neon.tech/neondb")
+    monkeypatch.setenv(
+        "APP_DATABASE_URL", "postgresql://app_runtime:y@ep-a-pooler.neon.tech/neondb"
+    )
+    get_settings.cache_clear()
+    try:
+        assert (
+            get_settings().database_url == "postgresql://app_runtime:y@ep-a-pooler.neon.tech/neondb"
+        )
+    finally:
+        get_settings.cache_clear()
+
+
 def test_to_async_url() -> None:
     assert to_async_url("postgresql://u:p@h/db") == "postgresql+asyncpg://u:p@h/db"
     assert to_async_url("postgres://u:p@h/db") == "postgresql+asyncpg://u:p@h/db"

@@ -31,7 +31,13 @@ class Settings(BaseSettings):
 
     # Neon: aplikasi memakai koneksi pooled (DATABASE_URL, host "-pooler");
     # migrasi memakai koneksi direct (DATABASE_URL_UNPOOLED dari `neon env pull`).
-    database_url: str | None = None
+    # APP_DATABASE_URL (role `app_runtime`, tanpa BYPASSRLS) diutamakan di atas DATABASE_URL, yaitu
+    # variabel integrasi Neon/Vercel yang memakai role owner dan tidak bisa diubah. Migrasi tidak
+    # membaca keduanya dari sini (lihat app/core/migration_target.py).
+    database_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("APP_DATABASE_URL", "DATABASE_URL"),
+    )
     database_url_direct: str | None = Field(
         default=None,
         validation_alias=AliasChoices("DATABASE_URL_DIRECT", "DATABASE_URL_UNPOOLED"),
