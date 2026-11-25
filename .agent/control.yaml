@@ -26,6 +26,9 @@ report_time: "04:47"          # laporan harian (read-only, tanpa lock)
 # Batas pemakaian mingguan (keputusan PO 24 Nov 2026): berhenti bila utilisasi 7 hari >= nilai ini.
 # Dibaca PM dari event rate_limit_event sesi sendiri (lihat PLAYBOOK A1 langkah 4).
 weekly_usage_stop: 0.65
+# Keputusan PO 25 Nov 2026: Sabtu & Minggu (WIB, menurut waktu mulai run/tugas) batas dihapus — boleh sampai 100%.
+weekly_usage_stop_weekend: 1.00
+weekend_days: [sat, sun]
 
 max_tasks_per_run: 3
 max_parallel_subagents: 2

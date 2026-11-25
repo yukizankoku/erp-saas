@@ -4,7 +4,7 @@
 
 **Diperbarui:** 2026-11-25 01:50 WIB (run manual 2026-11-24T2102 ditutup; dilanjutkan runner terjadwal)
 **Fase aktif:** 1 — Platform Inti · **Mode:** active
-**Batas pemakaian:** berhenti bila mingguan ≥ 65% (keputusan PO). Terakhir: mingguan 59% (reset Sen 30 Nov 07:00 WIB) — sisa ±6 poin sebelum berhenti.
+**Batas pemakaian:** berhenti bila mingguan ≥ 65% pada Sen–Jum; Sabtu & Minggu WIB tanpa batas (s.d. 100%) — keputusan PO 25 Nov. Terakhir: mingguan 70% (25 Nov 18:08 WIB, run 18:07 NO-GO); reset Sen 30 Nov 07:00 WIB.
 
 ## Selesai
 - Fase 0 lengkap (PRD v0.3, monorepo, CI, agent ops, ADR 0001–0003, runner + jadwal).

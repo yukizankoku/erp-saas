@@ -17,7 +17,9 @@ Sumber aturan: PRD §5. Bila bertentangan, PRD yang berlaku.
    - `GO` → catat `stop_new_tasks`, `deadline`, `max_tasks_per_run`, `max_parallel_subagents`.
 4. **Cek batas pemakaian mingguan** (keputusan PO): `get_session` (tanpa id) → `list_events` sesi ini dengan
    `kinds: ["rate_limit_event"]`, `limit: 100`; ambil event terbaru → `unifiedWindows.seven_day.utilization`.
-   Nilai ≥ `weekly_usage_stop` di `control.yaml` (0.65) → NO-GO "batas mingguan", akhiri sesi. Belum ada event →
+   Batas = `weekly_usage_stop` (0.65) pada Sen–Jum, `weekly_usage_stop_weekend` (1.00) pada Sabtu & Minggu WIB
+   (keputusan PO 25 Nov 2026; hari ditentukan dari `TZ=Asia/Jakarta date` saat pengecekan).
+   Nilai ≥ batas → NO-GO "batas mingguan", akhiri sesi. Belum ada event →
    lanjut, lalu cek ulang setelah tugas pertama. Ulangi cek ini **sebelum setiap tugas** (A3) dan hentikan run bila lewat.
 5. Run ID = waktu mulai WIB, format `YYYY-MM-DDTHHMM`. Ambil lock:
    `python3 scripts/agent_lock.py acquire --run-id <RUN_ID>` → gagal = akhiri sesi.
@@ -32,7 +34,7 @@ Sumber aturan: PRD §5. Bila bertentangan, PRD yang berlaku.
 
 ### A3. Mengerjakan satu tugas
 
-Sebelum memulai setiap tugas: cek `TZ=Asia/Jakarta date` dan batas mingguan (A1 langkah 4). **Lewat `stop_new_tasks` atau utilisasi mingguan ≥ `weekly_usage_stop` → jangan mulai tugas baru.**
+Sebelum memulai setiap tugas: cek `TZ=Asia/Jakarta date` dan batas mingguan (A1 langkah 4). **Lewat `stop_new_tasks` atau utilisasi mingguan ≥ batas hari itu (A1 langkah 4: 0.65 Sen–Jum, 1.00 Sab–Min) → jangan mulai tugas baru.**
 
 1. Label issue `status:in-progress`; branch `feat/<nomor>-<slug>` dari `develop`.
 2. Delegasikan ke sub-agent sesuai alur (PRD §5.5):
