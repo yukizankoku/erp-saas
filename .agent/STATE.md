@@ -2,9 +2,9 @@
 
 > Diperbarui setiap checkpoint oleh PM Agent. Maks. 150 baris; ganti isi lama, jangan menumpuk riwayat.
 
-**Diperbarui:** 2026-11-28 00:40 WIB (run 2026-11-28T0009 ditutup)
+**Diperbarui:** 2026-11-28 05:30 WIB (run 2026-11-28T0509 ditutup)
 **Fase aktif:** 1 — Platform Inti · **Mode:** active
-**Batas pemakaian:** berhenti bila mingguan ≥ 65% Sen–Jum; Sab–Min WIB s.d. 100% (keputusan PO 25 Nov). Terakhir: mingguan 80% (28 Nov 00:35 WIB); reset Sen 30 Nov 07:00 WIB.
+**Batas pemakaian:** berhenti bila mingguan ≥ 65% Sen–Jum; Sab–Min WIB s.d. 100% (keputusan PO 25 Nov). Terakhir: mingguan 86% (28 Nov 05:27 WIB); reset Sen 30 Nov 07:00 WIB.
 
 ## Selesai
 - Fase 0 lengkap (PRD v0.3, monorepo, CI, agent ops, ADR 0001–0003, runner + jadwal).
@@ -16,22 +16,24 @@
 - Neon end-to-end terbukti lewat `neon-smoke` (PR #31): migrasi + /health/db ok.
 - #34 role `app_runtime` dibuat di Neon produksi (PR #39) + `APP_DATABASE_URL` mengalahkan URL integrasi (PR #40).
 - `neon-smoke` post-job cleanup diperbaiki (PR #43). #2 ditutup.
+- #36 P1-01d filter tenant ORM (PR #44, keputusan PO Opsi B): kriteria tenant otomatis, identity map, deny-by-default
+  tulis + CI `scripts/check_orm_banned_apis.py` (DML di CTE, `make_transient_to_detached`, `merge(load=False)`). Sisa → #47.
+- #37 P1-01e FK komposit (PR #48): UNIQUE (tenant_id, id) otomatis, `tenant_fk()`, 23503 → 422 `record.reference_invalid`
+  tanpa oracle, meta-test FK. ADR 0004 §4a/§7a.
+- RLS produksi aktif: Vercel memakai `APP_DATABASE_URL` role `app_runtime` (PO, 28 Nov).
 - #10 bagian A (PR #45): ports `ObjectStorage`/`Mailer`/`JobQueue`/`Realtime`/`PdfRenderer` + adapter dev/in-memory,
   pemilihan via env, key allowlist + kepemilikan tenant, signed URL kanonik; produksi menolak adapter dev saat dipakai. ADR 0005.
 
 ## Berikutnya (urutan)
-1. #36 P1-01d filter ORM — **blocked** (PR #44 terbuka, CI hijau, 139 test): sisa 2 temuan high (DML di CTE;
-   UPDATE/DELETE unit-of-work pada objek buatan manual). Usulan perbaikan di komentar #36.
-2. #37 P1-01e FK komposit (tenant_id, x_id) + amandemen ADR 0004 (juga menutup referensi FK lintas tenant).
-3. #10 bagian B: job queue Postgres (tenant_id per job, handler dalam tenant_context, redaksi last_error),
-   channel realtime terikat tenant.
-4. #18 P1-17 i18n/zona waktu/mata uang → #19 P1-18 design system (tidak bergantung #36).
-5. #3 P1-02 Tenant/company/branch/warehouse (bergantung #36, #37).
+1. #3 P1-02 Tenant/company/branch/warehouse — dependensi #36 & #37 sudah selesai; tabel bisnis pertama (pakai
+   `BaseRecord`, `tenant_fk`, `enable_tenant_rls()`), jalur sensitif.
+2. #10 bagian B: job queue Postgres (tenant_id per job, handler dalam tenant_context, redaksi last_error), realtime per tenant.
+3. #18 P1-17 i18n/zona waktu/mata uang (bergantung #3) → #19 P1-18 design system.
+4. #47 (p3) celah lapis 1 tersisa + follow-up review.
 
 ## Menunggu PO
-- Vercel: ganti `DATABASE_URL` ke URL pooled role `app_runtime` (Sensitive) lalu Redeploy — sampai itu, aplikasi di
-  Vercel masih memakai `neondb_owner` (BYPASSRLS → RLS tidak berlaku).
-- GitHub Environment `db-production`: pastikan *Required reviewers* aktif (run 25 Nov berjalan tanpa jeda persetujuan).
+- GitHub Environment `db-production`: pastikan *Required reviewers* aktif.
+- Pengaturan repo: default branch `main`, hapus head branch otomatis, proteksi `main`.
 
 ## Catatan teknis
 - Hemat kuota: kerjakan tugas di sesi dengan riwayat pendek (runner); sesi panjang yang bangun setelah jeda
