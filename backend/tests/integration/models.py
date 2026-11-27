@@ -2,11 +2,11 @@
 
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, Index, MetaData, String, Uuid, text
+from sqlalchemy import Index, MetaData, String, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.core.db import NAMING_CONVENTION
-from app.framework.record import BaseRecord
+from app.framework.record import BaseRecord, tenant_fk, tenant_fk_column
 from app.framework.repository import TenantRepository
 
 
@@ -36,9 +36,12 @@ class ItemChild(BaseRecord, IntegrationBase):
     """Anak `Item` untuk menguji lazy/selectin load lintas tenant."""
 
     __tablename__ = "rls_test_item_children"
-    __table_args__ = (Index("ix_rls_test_item_children_tenant_id_item_id", "tenant_id", "item_id"),)
+    __table_args__ = (
+        tenant_fk("rls_test_items", "item_id"),
+        Index("ix_rls_test_item_children_tenant_id_item_id", "tenant_id", "item_id"),
+    )
 
-    item_id: Mapped[UUID] = mapped_column(Uuid, ForeignKey("rls_test_items.id"))
+    item_id: Mapped[UUID] = tenant_fk_column()
     label: Mapped[str] = mapped_column(String(100))
 
 

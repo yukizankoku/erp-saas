@@ -126,6 +126,9 @@ async def _seed_cross_children(
     parent = await _seed_item(engine, tenant_a, "parent")
     child_a, child_b = uuid7(), uuid7()
     async with engine.begin() as conn:
+        # FK komposit (#37) mencegah baris lintas tenant; seed korupsi ini sengaja melewatinya
+        # (superuser, hanya transaksi ini) untuk menguji lapis filter ORM (pertahanan berlapis).
+        await conn.execute(text("SET LOCAL session_replication_role = replica"))
         for cid, tid, label in ((child_a, tenant_a, "own"), (child_b, tenant_b, "foreign")):
             await conn.execute(
                 text(
