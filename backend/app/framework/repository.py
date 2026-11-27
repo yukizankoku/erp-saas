@@ -10,7 +10,9 @@ Repository hanya `flush()`; commit/rollback milik dependency sesi atau service. 
 `VersionConflict` dari flush, sesi wajib di-rollback sebelum dipakai lagi. Pengecualian: `create`
 dengan `id` yang sudah dipakai (PK global, tenant mana pun) me-rollback transaksi sesi sendiri
 (kecuali di dalam savepoint pemanggil — savepoint itu yang dibatalkan pemanggil) lalu raise
-`RecordConflict` (409, pesan identik untuk tenant sendiri/lain).
+`RecordConflict` (409, pesan identik untuk tenant sendiri/lain). FK violation (23503) dari input
+`create`/`update` → `RecordReferenceInvalid` (422, identik untuk target tak ada / tenant lain),
+diisolasi savepoint sehingga tulisan lain di transaksi tetap utuh.
 """
 
 from collections.abc import Mapping, Sequence
@@ -27,12 +29,18 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.core.ids import uuid7
 from app.core.tenancy.context import current_user_id, require_tenant_id
 from app.core.tenancy.session import ensure_tenant_bound
-from app.framework.errors import RecordConflict, RecordNotFound, VersionConflict
+from app.framework.errors import (
+    RecordConflict,
+    RecordNotFound,
+    RecordReferenceInvalid,
+    VersionConflict,
+)
 from app.framework.record import SYSTEM_COLUMNS, BaseRecord
 
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 UNIQUE_VIOLATION = "23505"
+FOREIGN_KEY_VIOLATION = "23503"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,8 +102,13 @@ class TenantRepository[T: BaseRecord]:
         record.tenant_id = tenant_id
         if "id" not in values:
             # Id dibuat server (UUIDv7) → tidak bisa bentrok; tanpa savepoint tambahan.
-            self.session.add(record)
-            await self.session.flush()
+            try:
+                async with self.session.begin_nested():  # savepoint: tulisan lain tetap utuh
+                    self.session.add(record)
+                    await self.session.flush()
+            except IntegrityError as exc:
+                self._raise_if_reference_violation(exc)
+                raise
             return record
         try:
             # Id dari klien (offline) bisa bentrok: insert diisolasi dalam savepoint agar hanya
@@ -104,6 +117,7 @@ class TenantRepository[T: BaseRecord]:
                 self.session.add(record)
                 await self.session.flush()
         except IntegrityError as exc:
+            self._raise_if_reference_violation(exc)
             if not self._is_primary_key_violation(exc):
                 raise
             # Pesan sengaja sama untuk id milik tenant sendiri maupun tenant lain (tanpa oracle).
@@ -114,9 +128,16 @@ class TenantRepository[T: BaseRecord]:
         """Ubah record bila versinya masih `expected_version` (If-Match); versi lalu naik 1."""
         self._check_values(values, allow_id=False)
         record = await self._get_for_write(id, expected_version)
-        for key, value in values.items():
-            setattr(record, key, value)
-        await self._flush()
+        try:
+            # Savepoint dibuka sebelum atribut diubah (begin_nested mem-flush perubahan tertunda).
+            async with self.session.begin_nested():
+                for key, value in values.items():
+                    setattr(record, key, value)
+                await self._flush()
+        except RecordReferenceInvalid:
+            # Buang perubahan tertunda agar autoflush berikutnya tidak mengulang UPDATE yang gagal.
+            self.session.expire(record)
+            raise
         return record
 
     async def soft_delete(
@@ -149,6 +170,15 @@ class TenantRepository[T: BaseRecord]:
             await self.session.flush()
         except StaleDataError as exc:
             raise VersionConflict() from exc
+        except IntegrityError as exc:
+            self._raise_if_reference_violation(exc)
+            raise
+
+    @staticmethod
+    def _raise_if_reference_violation(exc: IntegrityError) -> None:
+        """FK violation (23503) → `RecordReferenceInvalid`, identik untuk tak ada / tenant lain."""
+        if getattr(exc.orig, "sqlstate", None) == FOREIGN_KEY_VIOLATION:
+            raise RecordReferenceInvalid() from exc
 
     def _is_primary_key_violation(self, exc: IntegrityError) -> bool:
         """Unique violation pada constraint PK tabel model (`pk_<tabel>`, naming convention)."""

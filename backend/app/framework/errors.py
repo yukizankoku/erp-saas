@@ -41,6 +41,17 @@ _MESSAGES: dict[str, dict[str, tuple[str, str]]] = {
             "or create it with a new ID.",
         ),
     },
+    "record.reference_invalid": {
+        # Sengaja generik: referensi tak ada ≡ milik tenant lain (tanpa oracle keberadaan).
+        "id": (
+            "Referensi data tidak valid",
+            "Data yang dirujuk tidak ditemukan. Periksa kembali isian yang merujuk data lain.",
+        ),
+        "en": (
+            "Invalid record reference",
+            "The referenced record was not found. Check the fields that refer to other records.",
+        ),
+    },
 }
 
 
@@ -72,6 +83,16 @@ class RecordConflict(RecordError):
 
     code = "record.conflict"
     status_code = 409
+
+
+class RecordReferenceInvalid(RecordError):
+    """FK (sqlstate 23503) dari input klien: target tak ada **atau** milik tenant lain.
+
+    Kedua kasus identik (kode, status, pesan) agar FK tidak menjadi oracle keberadaan.
+    """
+
+    code = "record.reference_invalid"
+    status_code = 422
 
 
 def preferred_language(accept_language: str | None) -> str:
@@ -118,3 +139,4 @@ def register_record_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RecordNotFound, _record_error_handler)
     app.add_exception_handler(VersionConflict, _record_error_handler)
     app.add_exception_handler(RecordConflict, _record_error_handler)
+    app.add_exception_handler(RecordReferenceInvalid, _record_error_handler)

@@ -10,6 +10,18 @@ Pemakaian (mixin, didahulukan dari `Base`):
         )
         code: Mapped[str] = mapped_column(String(64))
 
+    class ProductPrice(BaseRecord, Base):
+        __tablename__ = "inv_product_prices"
+        __table_args__ = (
+            tenant_fk("inv_products", "product_id", ondelete="CASCADE"),  # FK komposit
+            Index("ix_inv_product_prices_tenant_id_product_id", "tenant_id", "product_id"),
+        )
+        product_id: Mapped[UUID] = tenant_fk_column()
+
+Unique `(tenant_id, id)` (`uq_<tabel>_tenant_id_id`) dipasang otomatis pada setiap tabel BaseRecord
+sebagai target FK komposit; FK antar-tabel bisnis wajib komposit `(tenant_id, x_id) →
+(tenant_id, id)` agar relasi tak pernah melintasi tenant (ADR 0004 §4a, dijaga meta-test).
+
 Tidak ada indeks otomatis (hindari indeks ganda): tiap model wajib punya ≥ 1 indeks berawalan
 `tenant_id` dan unique parsial `(tenant_id, …) WHERE deleted_at IS NULL`; migrasinya wajib
 memanggil `enable_tenant_rls()` (dijaga meta-test). Tabel global (tenant, identitas user,
@@ -17,12 +29,22 @@ platform) tidak memakai BaseRecord/RLS. `company_id` → mixin `CompanyScoped` (
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import DateTime, Integer, Uuid, func, text
+from sqlalchemy import (
+    DateTime,
+    ForeignKeyConstraint,
+    Integer,
+    Table,
+    UniqueConstraint,
+    Uuid,
+    event,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, declared_attr, mapped_column
+from sqlalchemy.orm import Mapped, Mapper, declared_attr, mapped_column
 
 from app.core.ids import uuid7
 from app.core.tenancy.context import current_user_id, require_tenant_id
@@ -93,3 +115,39 @@ class BaseRecord:
             # bukan lazy load sesudah flush (MissingGreenlet).
             "eager_defaults": True,
         }
+
+
+def tenant_unique_name(table_name: str) -> str:
+    return f"uq_{table_name}_tenant_id_id"
+
+
+@event.listens_for(BaseRecord, "instrument_class", propagate=True)
+def _add_tenant_id_unique(mapper: Mapper[Any], class_: type) -> None:
+    """Pasang UNIQUE `(tenant_id, id)` (target FK komposit) tanpa mengganggu `__table_args__`."""
+    table = cast(Table, mapper.local_table)
+    name = tenant_unique_name(table.name)
+    if any(c.name == name for c in table.constraints):
+        return
+    table.append_constraint(UniqueConstraint("tenant_id", "id", name=name))
+
+
+def tenant_fk(
+    parent_table: str, column: str, *, ondelete: str | None = None, name: str | None = None
+) -> ForeignKeyConstraint:
+    """FK komposit `(tenant_id, <column>) → (<parent_table>.tenant_id, <parent_table>.id)`.
+
+    Taruh di `__table_args__`; kolomnya dibuat dengan `tenant_fk_column()`. Dengan begitu DB
+    menolak relasi lintas tenant (FK/unique PostgreSQL melewati RLS). Kolom FK nullable: pakai
+    `tenant_fk_column(nullable=True)` — MATCH SIMPLE melewati FK bila salah satu kolom NULL.
+    """
+    return ForeignKeyConstraint(
+        ["tenant_id", column],
+        [f"{parent_table}.tenant_id", f"{parent_table}.id"],
+        ondelete=ondelete,
+        name=name,
+    )
+
+
+def tenant_fk_column(*, nullable: bool = False) -> Mapped[UUID]:
+    """Kolom UUID untuk `tenant_fk` (tanpa `ForeignKey` sendiri: constraint ada di table args)."""
+    return mapped_column(Uuid, nullable=nullable)

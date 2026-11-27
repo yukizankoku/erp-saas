@@ -65,6 +65,20 @@ def _bind_tenant(session: Session, transaction: SessionTransaction, connection: 
   unique parsial `(tenant_id, …) WHERE deleted_at IS NULL` (meta-test §8). FK ke `core_tenants` menyusul. `company_id`
   → `CompanyScoped` (P1-02, filter aplikasi saja). Tabel global (tenant, identitas user, platform) tanpa BaseRecord/RLS.
 
+### 4a. FK komposit antar-tabel bisnis (amandemen, #37)
+FK dan unique PostgreSQL **melewati RLS**: tanpa pengaman, record bisa merujuk baris tenant lain dan pesan error FK
+menjadi oracle keberadaan. Aturannya:
+- Setiap tabel `BaseRecord` otomatis punya `UNIQUE (tenant_id, id)` bernama `uq_<tabel>_tenant_id_id` (event mapper
+  `instrument_class` pada mixin; `__table_args__` subclass tidak tersentuh). Ini target FK komposit.
+- FK ke tabel bisnis wajib komposit `(tenant_id, x_id) → (tenant_id, id)`: `tenant_fk("tabel_induk", "x_id",
+  ondelete=...)` di `__table_args__` + kolom `tenant_fk_column()`. FK satu kolom ke tabel ber-`tenant_id` ditolak meta-test
+  (`tests/test_tenant_fk_meta.py` untuk metadata app & uji; `test_rls_meta.py` via `pg_constraint` pada skema hasil migrasi).
+  FK nullable memakai MATCH SIMPLE (NULL = tidak dicek), aman karena `tenant_id` NOT NULL.
+- Repository: `create`/`update` mengisolasi flush dalam savepoint; sqlstate `23503` → `RecordReferenceInvalid`
+  (422 `record.reference_invalid`), pesan identik untuk target tak ada maupun milik tenant lain (tanpa oracle); tulisan
+  lain di transaksi tetap utuh. Kesalahan FK akibat delete/restrict di sisi induk bukan dari input klien dan tetap `IntegrityError`.
+- Biaya: satu indeks unique tambahan `(tenant_id, id)` per tabel (dipakai juga sebagai indeks berawalan `tenant_id`).
+
 ### 5. RLS per tabel bisnis (`core/tenancy/rls.py`)
 ```sql
 ALTER TABLE {t} ENABLE ROW LEVEL SECURITY;

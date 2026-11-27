@@ -166,6 +166,84 @@ async def test_every_tenant_table_after_migrations_is_protected(
     assert model_tables <= set(checked)
 
 
+TENANT_FK_SQL = text(
+    r"""
+    SELECT c.relname AS tbl,
+           EXISTS (
+             SELECT 1 FROM pg_constraint u
+             WHERE u.conrelid = c.oid AND u.contype IN ('u', 'p')
+               AND (SELECT array_agg(a.attname::text ORDER BY a.attname)
+                    FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum = ANY (u.conkey))
+                   = ARRAY['id', 'tenant_id']
+           ) AS has_tenant_unique
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_attribute t
+      ON t.attrelid = c.oid AND t.attname = 'tenant_id' AND t.attnum > 0 AND NOT t.attisdropped
+    WHERE c.relkind IN ('r', 'p') AND n.nspname = 'public'
+    ORDER BY 1
+    """
+)
+
+# FK menuju tabel ber-tenant_id yang tidak memuat tenant_id di kedua sisi.
+NON_COMPOSITE_FK_SQL = text(
+    r"""
+    SELECT c.relname AS tbl, k.conname AS fk
+    FROM pg_constraint k
+    JOIN pg_class c ON c.oid = k.conrelid
+    JOIN pg_class r ON r.oid = k.confrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE k.contype = 'f' AND n.nspname = 'public'
+      AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = r.oid
+                  AND a.attname = 'tenant_id' AND a.attnum > 0 AND NOT a.attisdropped)
+      AND NOT (
+        (SELECT a.attnum FROM pg_attribute a
+         WHERE a.attrelid = r.oid AND a.attname = 'tenant_id') = ANY (k.confkey)
+        AND (SELECT a.attnum FROM pg_attribute a
+             WHERE a.attrelid = c.oid AND a.attname = 'tenant_id') = ANY (k.conkey)
+        AND cardinality(k.conkey) >= 2
+      )
+    ORDER BY 1, 2
+    """
+)
+
+
+async def audit_tenant_fks(conn: AsyncConnection) -> list[str]:
+    problems = [
+        f"{r['tbl']}: tidak ada UNIQUE (tenant_id, id)"
+        for r in (await conn.execute(TENANT_FK_SQL)).mappings()
+        if not r["has_tenant_unique"]
+    ]
+    problems += [
+        f"{r['tbl']}: FK {r['fk']} bukan komposit tenant_id"
+        for r in (await conn.execute(NON_COMPOSITE_FK_SQL)).mappings()
+    ]
+    return problems
+
+
+async def test_tenant_tables_after_migrations_have_composite_fks(
+    admin_engine: AsyncEngine, migrated_head: str | None
+) -> None:
+    """Berlaku pada skema hasil migrasi; kosong (vacuous) selama belum ada tabel bisnis."""
+    async with admin_engine.connect() as conn:
+        assert await audit_tenant_fks(conn) == []
+
+
+async def test_fk_audit_flags_bad_tables(admin_engine: AsyncEngine) -> None:
+    async with admin_engine.connect() as conn:
+        await conn.execute(text("CREATE TABLE fkp_parent (id uuid PRIMARY KEY, tenant_id uuid)"))
+        await conn.execute(
+            text(
+                "CREATE TABLE fkp_bad (id uuid PRIMARY KEY, tenant_id uuid, "
+                "parent_id uuid REFERENCES fkp_parent (id))"
+            )
+        )
+        problems = await audit_tenant_fks(conn)
+        await conn.rollback()
+    assert "fkp_parent: tidak ada UNIQUE (tenant_id, id)" in problems
+    assert "fkp_bad: FK fkp_bad_parent_id_fkey bukan komposit tenant_id" in problems
+
+
 async def test_audit_flags_unprotected_tenant_table(admin_engine: AsyncEngine) -> None:
     async with admin_engine.connect() as conn:
         await conn.execute(
