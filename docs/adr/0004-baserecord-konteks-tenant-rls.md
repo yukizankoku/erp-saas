@@ -140,6 +140,12 @@ Lapis 1 tidak lagi hanya konvensi `TenantRepository.select()`: `core/tenancy/orm
 - **Batas:** statement Core, `text()`, dan objek `Table` tidak difilter → lapis 2 (RLS) penahan terakhir + aturan kode
   bisnis hanya lewat repository. `session.query(...).get()` (legacy) melewati pembungkus `get`: `session.query` dilarang
   di kode bisnis. Test lapis 1 berjalan di engine superuser (RLS tidak berlaku).
+- **Celah lapis 1 yang diketahui** (review security PR #44, keputusan PO 28 Nov: merge bertahap, lapis 2 aktif):
+  DML di dalam CTE dan UPDATE/DELETE unit-of-work pada objek yang identitasnya dibuat manual
+  (`make_transient_to_detached`, `merge(load=False)`). Ketiganya **dilarang di `backend/app/**`** (kecuali
+  `app/framework/`) oleh `scripts/check_orm_banned_apis.py` (AST, langkah CI `backend`). Pemeriksaan hanya melihat
+  rantai langsung `insert(...)….cte()`; statement DML yang disimpan di variabel lalu `.cte()` tidak terdeteksi →
+  review kode. Perbaikan di lapis 1 dilacak di issue lanjutan.
 
 ### 8. Strategi test
 - PostgreSQL nyata (CI service / `scripts/dev_pg.sh`); tanpa `DATABASE_URL` skip di lokal, **gagal** bila `CI=true`.
