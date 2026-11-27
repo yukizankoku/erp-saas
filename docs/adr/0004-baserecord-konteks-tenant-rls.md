@@ -73,7 +73,8 @@ menjadi oracle keberadaan. Aturannya:
 - FK ke tabel bisnis wajib komposit `(tenant_id, x_id) → (tenant_id, id)`: `tenant_fk("tabel_induk", "x_id",
   ondelete=...)` di `__table_args__` + kolom `tenant_fk_column()`. FK satu kolom ke tabel ber-`tenant_id` ditolak meta-test
   (`tests/test_tenant_fk_meta.py` untuk metadata app & uji; `test_rls_meta.py` via `pg_constraint` pada skema hasil migrasi).
-  FK nullable memakai MATCH SIMPLE (NULL = tidak dicek), aman karena `tenant_id` NOT NULL.
+  FK nullable memakai MATCH SIMPLE (NULL = tidak dicek), aman karena `tenant_id` NOT NULL. `ondelete` hanya
+  `CASCADE`/`RESTRICT`/`NO ACTION`: `SET NULL`/`SET DEFAULT` juga mengubah `tenant_id` sehingga ditolak helper.
 - Repository: `create`/`update` mengisolasi flush dalam savepoint; sqlstate `23503` → `RecordReferenceInvalid`
   (422 `record.reference_invalid`), pesan identik untuk target tak ada maupun milik tenant lain (tanpa oracle); tulisan
   lain di transaksi tetap utuh. Kesalahan FK akibat delete/restrict di sisi induk bukan dari input klien dan tetap `IntegrityError`.

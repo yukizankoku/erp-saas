@@ -131,6 +131,9 @@ def _add_tenant_id_unique(mapper: Mapper[Any], class_: type) -> None:
     table.append_constraint(UniqueConstraint("tenant_id", "id", name=name))
 
 
+_ALLOWED_ONDELETE = ("CASCADE", "RESTRICT", "NO ACTION")
+
+
 def tenant_fk(
     parent_table: str, column: str, *, ondelete: str | None = None, name: str | None = None
 ) -> ForeignKeyConstraint:
@@ -139,7 +142,15 @@ def tenant_fk(
     Taruh di `__table_args__`; kolomnya dibuat dengan `tenant_fk_column()`. Dengan begitu DB
     menolak relasi lintas tenant (FK/unique PostgreSQL melewati RLS). Kolom FK nullable: pakai
     `tenant_fk_column(nullable=True)` — MATCH SIMPLE melewati FK bila salah satu kolom NULL.
+
+    `ondelete` hanya `CASCADE`/`RESTRICT`/`NO ACTION`: `SET NULL`/`SET DEFAULT` ikut mengubah
+    `tenant_id` (NOT NULL) sehingga delete induk gagal. Untuk "lepas relasi", kosongkan kolom FK
+    di service sebelum menghapus induk.
     """
+    if ondelete is not None and ondelete.upper() not in _ALLOWED_ONDELETE:
+        raise ValueError(
+            f"tenant_fk ondelete={ondelete!r} not allowed; use one of {_ALLOWED_ONDELETE}"
+        )
     return ForeignKeyConstraint(
         ["tenant_id", column],
         [f"{parent_table}.tenant_id", f"{parent_table}.id"],

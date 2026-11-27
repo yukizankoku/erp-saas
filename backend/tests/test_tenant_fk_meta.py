@@ -1,3 +1,5 @@
+import pytest
+
 """Meta-test: FK antar-tabel bisnis wajib komposit `(tenant_id, x_id)` (ADR 0004 §4a, #37)."""
 
 from uuid import UUID
@@ -53,3 +55,11 @@ def test_unique_tenant_id_name_and_custom_table_args_preserved() -> None:
     names = {c.name for c in table.constraints}
     assert "uq_rls_test_items_tenant_id_id" in names
     assert any(i.name == "ix_rls_test_items_tenant_id_name" for i in table.indexes)
+
+
+@pytest.mark.parametrize("ondelete", ["SET NULL", "set default"])
+def test_tenant_fk_rejects_ondelete_that_touches_tenant_id(ondelete: str) -> None:
+    from app.framework.record import tenant_fk
+
+    with pytest.raises(ValueError):
+        tenant_fk("parents", "parent_id", ondelete=ondelete)
