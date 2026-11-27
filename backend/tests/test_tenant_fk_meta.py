@@ -1,9 +1,8 @@
-import pytest
-
 """Meta-test: FK antar-tabel bisnis wajib komposit `(tenant_id, x_id)` (ADR 0004 §4a, #37)."""
 
 from uuid import UUID
 
+import pytest
 from sqlalchemy import Column, ForeignKey, MetaData, Table, Uuid
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -59,7 +58,5 @@ def test_unique_tenant_id_name_and_custom_table_args_preserved() -> None:
 
 @pytest.mark.parametrize("ondelete", ["SET NULL", "set default"])
 def test_tenant_fk_rejects_ondelete_that_touches_tenant_id(ondelete: str) -> None:
-    from app.framework.record import tenant_fk
-
     with pytest.raises(ValueError):
         tenant_fk("parents", "parent_id", ondelete=ondelete)
