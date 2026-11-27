@@ -1,5 +1,5 @@
 # Kill switch & jam kerja agent (PRD §5.2–5.4). PO boleh mengedit file ini langsung di GitHub (branch develop).
-mode: active              # active | paused | stopped | hemat
+mode: stopped             # active | paused | stopped | hemat
 timezone: Asia/Jakarta
 
 blocked_window:           # agent DILARANG bekerja di jendela ini (keputusan PO 24 Nov 2026)
