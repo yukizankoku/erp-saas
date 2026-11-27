@@ -1,5 +1,6 @@
 """Pemilihan adapter dari settings (env). Dependency FastAPI: `Depends(get_storage)` dst."""
 
+import logging
 from collections.abc import Callable
 from functools import lru_cache
 
@@ -14,6 +15,8 @@ from app.core.ports.mailer import Mailer
 from app.core.ports.pdf import PdfRenderer
 from app.core.ports.realtime import Realtime
 from app.core.ports.storage import ObjectStorage
+
+logger = logging.getLogger(__name__)
 
 
 class UnknownBackendError(RuntimeError):
@@ -53,23 +56,59 @@ def build_realtime(s: Settings) -> Realtime:
     return _choose("REALTIME_BACKEND", s.realtime_backend, {"memory": MemoryRealtime})
 
 
-def validate_backends(s: Settings) -> None:
-    """Panggil saat startup agar konfigurasi salah gagal cepat."""
-    build_storage(s)
-    build_mailer(s)
-    build_job_queue(s)
-    build_realtime(s)
+class UnsafeBackendError(RuntimeError):
+    """Backend dev/test dipakai di staging/production."""
+
+
+_GUARDED_ENVS = ("staging", "production")
+
+
+def unsafe_reasons(s: Settings) -> dict[str, str]:
+    """Komponen -> alasan tak aman di staging/production. Tanpa nilai secret. Tidak melempar."""
+    if s.environment not in _GUARDED_ENVS:
+        return {}
+    dev = {
+        "storage": (s.storage_backend, {"local", "memory"}),
+        "mailer": (s.mailer_backend, {"console", "memory"}),
+        "jobqueue": (s.jobqueue_backend, {"memory"}),
+        "realtime": (s.realtime_backend, {"memory"}),
+    }
+    out = {
+        name: f"{name} backend {value!r} is for dev/test only"
+        for name, (value, banned) in dev.items()
+        if value in banned
+    }
+    if len(s.storage_signing_secret or "") < 32:
+        reason = "STORAGE_SIGNING_SECRET is missing or shorter than 32 characters"
+        out["storage"] = f"{out['storage']}; {reason}" if "storage" in out else reason
+    return out
+
+
+def warn_unsafe_backends(s: Settings) -> None:
+    """Dipanggil `create_app()`: hanya log peringatan (aplikasi tetap boot)."""
+    for name, reason in unsafe_reasons(s).items():
+        logger.warning("unsafe %s in %s: %s", name, s.environment, reason)
+
+
+def _guard(s: Settings, component: str) -> None:
+    reason = unsafe_reasons(s).get(component)
+    if reason:
+        raise UnsafeBackendError(f"{reason} (environment={s.environment})")
 
 
 # Singleton per proses (adapter in-memory harus berbagi state antar request).
 @lru_cache
 def get_storage() -> ObjectStorage:
-    return build_storage(get_settings())
+    settings = get_settings()
+    _guard(settings, "storage")
+    return build_storage(settings)
 
 
 @lru_cache
 def get_mailer() -> Mailer:
-    return build_mailer(get_settings())
+    settings = get_settings()
+    _guard(settings, "mailer")
+    return build_mailer(settings)
 
 
 @lru_cache
@@ -78,16 +117,20 @@ def _job_backend() -> MemoryJobQueue:
 
 
 def get_job_queue() -> JobQueue:
+    _guard(get_settings(), "jobqueue")
     return _job_backend()
 
 
 def get_job_runner() -> JobRunner:
+    _guard(get_settings(), "jobqueue")
     return _job_backend()
 
 
 @lru_cache
 def get_realtime() -> Realtime:
-    return build_realtime(get_settings())
+    settings = get_settings()
+    _guard(settings, "realtime")
+    return build_realtime(settings)
 
 
 def get_pdf_renderer() -> PdfRenderer:

@@ -1,9 +1,9 @@
 """Port `ObjectStorage` + helper kunci objek berprefiks tenant (aman dari path traversal)."""
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
-from uuid import UUID
 
 from app.core.tenancy.context import require_tenant_id
 
@@ -12,22 +12,38 @@ class InvalidStorageKey(ValueError):
     """Kunci objek tidak aman (traversal, path absolut, segmen kosong, dst.)."""
 
 
+_SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
+
+
 def validate_key(key: str) -> str:
-    """Pastikan kunci = segmen relatif non-kosong dipisah `/`; kembalikan kunci apa adanya."""
-    if not key or key.startswith("/") or "\\" in key or "\x00" in key:
+    """Kunci = segmen relatif dipisah `/`; tiap segmen hanya `[A-Za-z0-9._-]`, bukan `.`/`..`.
+
+    Allowlist ini otomatis menolak kontrol/format char, `?#%\\:`, spasi, dan Unicode (tanpa
+    ambiguitas normalisasi). Nama file dari pengguna harus disanitasi pemanggil.
+    """
+    if not isinstance(key, str) or not key:
         raise InvalidStorageKey("invalid storage key")
     for segment in key.split("/"):
-        if segment in ("", ".", "..") or segment != segment.strip() or ":" in segment:
+        if segment in (".", "..") or _SEGMENT.fullmatch(segment) is None:
             raise InvalidStorageKey("invalid storage key segment")
     return key
 
 
-def tenant_key(*segments: str, tenant_id: UUID | None = None) -> str:
-    """Bangun `t/<tenant_id>/<seg>/...`; tenant diambil dari konteks bila tidak diberikan."""
-    tid = tenant_id if tenant_id is not None else require_tenant_id()
+def tenant_key(*segments: str) -> str:
+    """Bangun `t/<tenant_id>/<seg>/...`; tenant SELALU dari konteks (tanpa override)."""
+    tid = require_tenant_id()
     if not segments:
         raise InvalidStorageKey("at least one segment is required")
     return validate_key("/".join(("t", str(tid), *segments)))
+
+
+def assert_tenant_owned(key: str) -> str:
+    """Validasi kunci dan pastikan berawalan `t/<tenant konteks>/` (fail-closed tanpa konteks)."""
+    validate_key(key)
+    parts = key.split("/")
+    if len(parts) < 3 or parts[0] != "t" or parts[1] != str(require_tenant_id()):
+        raise InvalidStorageKey("key does not belong to the current tenant")
+    return key
 
 
 @dataclass(frozen=True, slots=True)

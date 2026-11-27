@@ -2,13 +2,21 @@
 
 import hashlib
 import hmac
+import json
 import secrets
+import unicodedata
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
-from app.core.ports.storage import InvalidStorageKey, ObjectStorage, PresignedUrl, validate_key
+from app.core.ports.storage import (
+    InvalidStorageKey,
+    ObjectStorage,
+    PresignedUrl,
+    assert_tenant_owned,
+)
+from app.core.tenancy.context import TenantContextMissing
 
 Clock = Callable[[], datetime]
 
@@ -26,15 +34,22 @@ class UrlSigner:
         self._clock = clock
 
     def _sig(self, method: str, key: str, exp: int, content_type: str, max_bytes: int) -> str:
-        msg = f"{method}\n{key}\n{exp}\n{content_type}\n{max_bytes}".encode()
+        # JSON = pengkodean tak ambigu (tanpa pemisah yang bisa disuntik lewat field).
+        msg = json.dumps(
+            [method, key, exp, content_type, max_bytes], separators=(",", ":")
+        ).encode()
         return hmac.new(self._secret, msg, hashlib.sha256).hexdigest()
 
     def sign(
         self, method: str, key: str, expires_in: int, content_type: str = "", max_bytes: int = 0
     ) -> PresignedUrl:
-        validate_key(key)
+        assert_tenant_owned(key)
         if expires_in <= 0:
             raise ValueError("expires_in must be positive")
+        if any(unicodedata.category(c)[0] == "C" for c in content_type):
+            raise ValueError("invalid content_type")
+        if method == "PUT" and max_bytes <= 0:
+            raise ValueError("max_bytes must be positive for uploads")
         expires_at = self._clock() + timedelta(seconds=expires_in)
         exp = int(expires_at.timestamp())
         params = {"exp": exp, "sig": self._sig(method, key, exp, content_type, max_bytes)}
@@ -43,7 +58,7 @@ class UrlSigner:
             params["max_bytes"] = max_bytes
             headers["Content-Type"] = content_type
         return PresignedUrl(
-            url=f"/_local-storage/{key}?{urlencode(params)}",
+            url=f"/_local-storage/{quote(key, safe='/')}?{urlencode(params)}",
             method=method,
             expires_at=expires_at,
             headers=headers,
@@ -59,8 +74,8 @@ class UrlSigner:
         max_bytes: int = 0,
     ) -> bool:
         try:
-            validate_key(key)
-        except InvalidStorageKey:
+            assert_tenant_owned(key)
+        except (InvalidStorageKey, TenantContextMissing):
             return False
         if self._clock().timestamp() > exp:
             return False
@@ -86,19 +101,19 @@ class MemoryStorage(_SignedStorage):
         self._objects: dict[str, tuple[bytes, str]] = {}
 
     async def put(self, key: str, data: bytes, content_type: str) -> None:
-        self._objects[validate_key(key)] = (data, content_type)
+        self._objects[assert_tenant_owned(key)] = (data, content_type)
 
     async def get(self, key: str) -> bytes:
         try:
-            return self._objects[validate_key(key)][0]
+            return self._objects[assert_tenant_owned(key)][0]
         except KeyError:
             raise FileNotFoundError(key) from None
 
     async def delete(self, key: str) -> None:
-        self._objects.pop(validate_key(key), None)
+        self._objects.pop(assert_tenant_owned(key), None)
 
     async def exists(self, key: str) -> bool:
-        return validate_key(key) in self._objects
+        return assert_tenant_owned(key) in self._objects
 
 
 class LocalFileStorage(_SignedStorage):
@@ -107,7 +122,7 @@ class LocalFileStorage(_SignedStorage):
         self._root = Path(root).resolve()
 
     def _path(self, key: str) -> Path:
-        path = (self._root / validate_key(key)).resolve()
+        path = (self._root / assert_tenant_owned(key)).resolve()
         if not path.is_relative_to(self._root):  # sabuk pengaman tambahan (mis. symlink)
             raise InvalidStorageKey("key escapes storage root")
         return path
