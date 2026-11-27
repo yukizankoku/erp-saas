@@ -23,25 +23,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, SessionTransaction
 
 from app.core.tenancy.context import get_context, require_tenant_id
-from app.core.tenancy.orm_filter import purge_foreign_records
+from app.core.tenancy.orm_filter import SESSION_INFO_KEY, TenantRebindError, purge_foreign_records
 
-SESSION_INFO_KEY = "rls_tenant_id"
+__all__ = ["SESSION_INFO_KEY", "SET_TENANT_SQL", "TenantRebindError", "ensure_tenant_bound"]
+
 SET_TENANT_SQL = text("SELECT set_config('app.tenant_id', :tid, true)")
 
 
-_ALREADY_BOUND = "transaction is already bound to another tenant; commit/rollback before switching"
 _SAVEPOINT_BIND = (
     "a savepoint cannot bind or switch the tenant of its transaction; "
     "bind the tenant before begin_nested()"
 )
-
-
-class TenantRebindError(RuntimeError):
-    """Transaksi yang sudah terikat ke satu tenant dipakai untuk tenant lain, atau tenant
-    hendak diikat/dipindah dari dalam savepoint."""
-
-    def __init__(self, message: str = _ALREADY_BOUND) -> None:
-        super().__init__(message)
 
 
 @event.listens_for(Session, "after_begin")
@@ -59,6 +51,14 @@ def _bind_tenant(session: Session, transaction: SessionTransaction, connection: 
     purge_foreign_records(session, ctx.tenant_id if ctx is not None else None)
     if ctx is not None:
         connection.execute(SET_TENANT_SQL, {"tid": str(ctx.tenant_id)})
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _clear_binding(session: Session, transaction: SessionTransaction) -> None:
+    # Binding hanya berlaku selama transaksi; sisa nilai lama membuat transaksi autobegin berikutnya
+    # (belum punya koneksi) tampak terikat ke tenant sebelumnya.
+    if transaction.parent is None:
+        session.info.pop(SESSION_INFO_KEY, None)
 
 
 async def ensure_tenant_bound(session: AsyncSession) -> UUID:

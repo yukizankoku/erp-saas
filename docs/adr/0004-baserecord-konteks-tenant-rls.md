@@ -120,18 +120,23 @@ class TenantRepository[T: BaseRecord]:
 ### 7a. Filter tenant otomatis di ORM (amandemen, #36)
 Lapis 1 tidak lagi hanya konvensi `TenantRepository.select()`: `core/tenancy/orm_filter.py` terdaftar global pada
 `Session` (diimpor oleh `session.py`, jadi ikut setiap pemakai repository).
-- `do_orm_execute`: SELECT / bulk UPDATE / bulk DELETE ORM yang menyentuh mapper `BaseRecord` (termasuk lazy load,
-  selectin, refresh kolom, alias) mendapat `with_loader_criteria(BaseRecord, tenant_id = <konteks>)`; nilai tenant
-  berupa bound parameter (cache kompilasi dibagi antar tenant). Tanpa konteks → `TenantContextMissing` (bukan hasil
-  kosong). Tidak ada opsi bypass (lihat §2).
-- Identity map: `session.get()` yang kena cache tidak menjalankan query, jadi `Session.get` dibungkus — tanpa konteks
-  → error; hasil milik tenant lain → di-expunge dan `None`. Tambahan: awal transaksi non-nested dan
-  `ensure_tenant_bound` meng-expunge instance `BaseRecord` tenant lain. Instance expired di-refresh lewat filter di atas.
-- `before_flush`: objek baru/berubah/dihapus dengan `tenant_id` ≠ konteks → `TenantMismatchError`; flush `BaseRecord`
-  tanpa konteks → `TenantContextMissing`. Objek baru tanpa `tenant_id` diisi default dari konteks.
-- **Batas:** statement Core, `text()`, dan objek `Table` tidak punya mapper sehingga tidak difilter → lapis 2 (RLS) tetap
-  penahan terakhir, ditambah aturan: kode bisnis hanya lewat repository. Test lapis 1 berjalan di engine superuser
-  (RLS tidak berlaku) agar terbukti berdiri sendiri.
+- `do_orm_execute`: **setiap** SELECT / bulk UPDATE / bulk DELETE ORM mendapat `with_loader_criteria(BaseRecord,
+  tenant_id = <konteks>)` bila ada konteks (tanpa syarat `all_mappers`, yang tidak melihat subquery/EXISTS/UNION/`count()`);
+  mencakup lazy load, selectin, refresh, alias. Nilai tenant = bound parameter (cache dibagi antar tenant). Tanpa
+  konteks → `TenantContextMissing` bila statement mereferensikan tabel milik `BaseRecord`; statement lain jalan normal.
+  Tidak ada opsi bypass (§2).
+- Tulis: INSERT/UPDATE `BaseRecord` dengan `tenant_id` eksplisit ≠ konteks (`.values()` / params executemany) ditolak,
+  `tenant_id` di SET UPDATE ditolak, `INSERT ... FROM SELECT` ditolak (`TenantMismatchError`).
+- Identity map: `Session.get` dibungkus — tanpa konteks → error; hit milik tenant lain → expunge + `None`. Awal transaksi
+  non-nested dan `ensure_tenant_bound` meng-expunge instance `BaseRecord` yang `tenant_id`-nya asing **atau tidak termuat**
+  (expired; dimuat ulang lewat filter bila dipakai lagi).
+- `before_flush`: objek baru/berubah/dihapus dengan `tenant_id` ≠ konteks → `TenantMismatchError`; objek persistent
+  yang `tenant_id`-nya tidak termuat atau berubah (history) ditolak; flush tanpa konteks → `TenantContextMissing`.
+  Transaksi yang sudah terikat tenant lain dipakai di konteks berbeda → `TenantRebindError` (execute, get, flush, merge).
+  Binding `session.info` dibersihkan di akhir transaksi root.
+- **Batas:** statement Core, `text()`, dan objek `Table` tidak difilter → lapis 2 (RLS) penahan terakhir + aturan kode
+  bisnis hanya lewat repository. `session.query(...).get()` (legacy) melewati pembungkus `get`: `session.query` dilarang
+  di kode bisnis. Test lapis 1 berjalan di engine superuser (RLS tidak berlaku).
 
 ### 8. Strategi test
 - PostgreSQL nyata (CI service / `scripts/dev_pg.sh`); tanpa `DATABASE_URL` skip di lokal, **gagal** bila `CI=true`.

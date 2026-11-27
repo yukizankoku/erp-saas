@@ -4,6 +4,8 @@
 Semua test di sini membuktikan `app.core.tenancy.orm_filter` (ADR 0004 §7a) tanpa bantuan RLS.
 """
 
+from collections.abc import Callable
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -15,6 +17,7 @@ from sqlalchemy.orm import selectinload
 from app.core.ids import uuid7
 from app.core.tenancy.context import TenantContextMissing, tenant_context
 from app.core.tenancy.orm_filter import TenantMismatchError
+from app.core.tenancy.session import TenantRebindError
 from tests.integration.models import Item
 
 pytestmark = pytest.mark.usefixtures("rls_tables")
@@ -205,17 +208,163 @@ async def test_new_object_without_tenant_id_gets_context_tenant(
     assert await _raw_name(admin_engine, row_id) == "ok"
 
 
-def test_criteria_is_parametrised_per_tenant() -> None:
-    """Statement yang sama, dua konteks → dua nilai bound berbeda (bukan nilai ter-cache)."""
-    from app.core.tenancy.orm_filter import _tenant_criteria
-
+async def test_same_statement_object_per_tenant(
+    admin_engine: AsyncEngine, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Satu objek statement dieksekusi A → B → A lewat sesi nyata: nilai tenant tidak ter-cache."""
     tenant_a, tenant_b = uuid7(), uuid7()
-    stmt = sa.select(Item)
-    compiled = []
-    for tenant in (tenant_a, tenant_b):
-        s = stmt.options(_tenant_criteria(tenant))
-        c = s.compile()
-        compiled.append((str(c), list(c.params.values())))
-    assert compiled[0][0] == compiled[1][0]
-    assert compiled[0][1] == [tenant_a]
-    assert compiled[1][1] == [tenant_b]
+    row_a = await _seed_item(admin_engine, tenant_a)
+    row_b = await _seed_item(admin_engine, tenant_b)
+    stmt = sa.select(Item.id).where(Item.id.in_([row_a, row_b]))
+    for tenant, expected in ((tenant_a, row_a), (tenant_b, row_b), (tenant_a, row_a)):
+        async with factory() as session:
+            with tenant_context(tenant):
+                assert (await session.execute(stmt)).scalars().all() == [expected]
+
+
+Builder = Callable[[UUID], Any]
+LEAKY: dict[str, Builder] = {
+    "count": lambda rb: sa.select(sa.func.count()).select_from(Item),
+    "exists": lambda rb: sa.select(sa.exists().where(Item.id == rb)),
+    "scalar_subquery": lambda rb: sa.select(
+        sa.select(Item.name).where(Item.id == rb).scalar_subquery()
+    ),
+    "union_all": lambda rb: sa.union_all(
+        sa.select(Item.id).where(Item.id == rb), sa.select(Item.id).where(Item.id == rb)
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(LEAKY))
+async def test_nested_entities_are_filtered(
+    name: str, admin_engine: AsyncEngine, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    tenant_a, tenant_b = uuid7(), uuid7()
+    row_b = await _seed_item(admin_engine, tenant_b, "secret")
+    async with factory() as session:
+        with tenant_context(tenant_a):
+            rows = (await session.execute(LEAKY[name](row_b))).all()
+        assert rows in ([(0,)], [(False,)], [(None,)], []), rows
+        with pytest.raises(TenantContextMissing):
+            await session.execute(LEAKY[name](row_b))
+
+
+async def test_expired_foreign_instance_cannot_be_modified_or_deleted(
+    admin_engine: AsyncEngine,
+) -> None:
+    tenant_a, tenant_b = uuid7(), uuid7()
+    row_b = await _seed_item(admin_engine, tenant_b, "victim")
+    maker = async_sessionmaker(admin_engine, expire_on_commit=True)
+    for mutate in ("update", "delete"):
+        async with maker() as session:
+            with tenant_context(tenant_b):
+                obj = await session.get(Item, row_b)
+                assert obj is not None
+                await session.commit()
+            with tenant_context(tenant_a):
+                if mutate == "update":
+                    obj.name = "pwned"
+                else:
+                    await session.delete(obj)
+                with pytest.raises(TenantMismatchError):
+                    await session.commit()
+                await session.rollback()
+        assert await _raw_name(admin_engine, row_b) == "victim"
+
+
+async def test_retargeting_tenant_id_and_same_txn_switch_rejected(
+    admin_engine: AsyncEngine, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    tenant_a, tenant_b = uuid7(), uuid7()
+    row_b = await _seed_item(admin_engine, tenant_b, "victim")
+    async with factory() as session:
+        with tenant_context(tenant_b):
+            obj = await session.get(Item, row_b)
+            assert obj is not None
+        with tenant_context(tenant_a):
+            obj.tenant_id = tenant_a
+            obj.name = "stolen"
+            with pytest.raises(TenantRebindError):
+                await session.commit()
+            await session.rollback()
+    async with factory() as session:
+        with tenant_context(tenant_b):
+            obj = await session.get(Item, row_b)
+            assert obj is not None
+            await session.commit()
+        with tenant_context(tenant_b):
+            obj.tenant_id = tenant_a  # ubah tenant_id persistent walau konteks sama
+            with pytest.raises(TenantMismatchError):
+                await session.flush()
+            await session.rollback()
+    async with factory() as session:
+        with tenant_context(tenant_b):
+            with_b = await session.get(Item, row_b)
+            assert with_b is not None and with_b.name == "victim"
+
+
+async def test_same_txn_context_switch_blocks_get_execute_merge(
+    admin_engine: AsyncEngine, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    tenant_a, tenant_b = uuid7(), uuid7()
+    row_b = await _seed_item(admin_engine, tenant_b)
+    async with factory() as session:
+        with tenant_context(tenant_b):
+            await session.get(Item, row_b)
+        with tenant_context(tenant_a):
+            with pytest.raises(TenantRebindError):
+                await session.get(Item, row_b)
+            with pytest.raises(TenantRebindError):
+                await session.execute(sa.select(Item))
+            with pytest.raises(TenantRebindError):
+                await session.merge(Item(id=row_b, name="m"))
+
+
+async def _count_rows(engine: AsyncEngine, tenant: UUID) -> int:
+    async with engine.connect() as conn:
+        return int(
+            (
+                await conn.execute(
+                    text("SELECT count(*) FROM rls_test_items WHERE tenant_id = :t"), {"t": tenant}
+                )
+            ).scalar_one()
+        )
+
+
+async def test_insert_and_update_cannot_target_other_tenant(
+    admin_engine: AsyncEngine, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    tenant_a, tenant_b = uuid7(), uuid7()
+    row_b = await _seed_item(admin_engine, tenant_b, "secret")
+    row_a = await _seed_item(admin_engine, tenant_a, "mine")
+    from_select = sa.insert(Item).from_select(
+        ["id", "tenant_id", "name"],
+        sa.select(sa.literal(uuid7()), sa.literal(tenant_a), Item.name).where(Item.id == row_b),
+    )
+    statements: list[tuple[Any, Any]] = [
+        (sa.insert(Item).values(id=uuid7(), tenant_id=tenant_b, name="x"), None),
+        (sa.insert(Item), [{"id": uuid7(), "tenant_id": tenant_b, "name": "x"}]),
+        (from_select, None),
+        (sa.update(Item).where(Item.id == row_a).values(tenant_id=tenant_b), None),
+        (sa.update(Item).where(Item.id == row_a).values(tenant_id=tenant_a), None),
+    ]
+    for stmt, params in statements:
+        async with factory() as session:
+            with tenant_context(tenant_a):
+                with pytest.raises(TenantMismatchError):
+                    await session.execute(stmt, params)
+                await session.rollback()
+    assert await _count_rows(admin_engine, tenant_b) == 1
+    assert await _count_rows(admin_engine, tenant_a) == 1
+    async with factory() as session:  # insert sah (tenant sendiri / default) tetap jalan
+        with tenant_context(tenant_a):
+            await session.execute(sa.insert(Item).values(id=uuid7(), tenant_id=tenant_a, name="ok"))
+            await session.execute(sa.insert(Item), [{"id": uuid7(), "name": "ok2"}])
+            await session.commit()
+    assert await _count_rows(admin_engine, tenant_a) == 3
+
+
+async def test_insert_without_context_rejected(factory: async_sessionmaker[AsyncSession]) -> None:
+    async with factory() as session:
+        with pytest.raises(TenantContextMissing):
+            await session.execute(sa.insert(Item).values(id=uuid7(), tenant_id=uuid7(), name="x"))
