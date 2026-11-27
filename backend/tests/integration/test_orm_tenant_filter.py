@@ -347,6 +347,7 @@ async def test_insert_and_update_cannot_target_other_tenant(
         (from_select, None),
         (sa.update(Item).where(Item.id == row_a).values(tenant_id=tenant_b), None),
         (sa.update(Item).where(Item.id == row_a).values(tenant_id=tenant_a), None),
+        (sa.insert(Item).values(id=uuid7(), name="x", tenant_id=tenant_a), None),
     ]
     for stmt, params in statements:
         async with factory() as session:
@@ -358,7 +359,7 @@ async def test_insert_and_update_cannot_target_other_tenant(
     assert await _count_rows(admin_engine, tenant_a) == 1
     async with factory() as session:  # insert sah (tenant sendiri / default) tetap jalan
         with tenant_context(tenant_a):
-            await session.execute(sa.insert(Item).values(id=uuid7(), tenant_id=tenant_a, name="ok"))
+            await session.execute(sa.insert(Item).values(id=uuid7(), name="ok"))
             await session.execute(sa.insert(Item), [{"id": uuid7(), "name": "ok2"}])
             await session.commit()
     assert await _count_rows(admin_engine, tenant_a) == 3
@@ -368,3 +369,84 @@ async def test_insert_without_context_rejected(factory: async_sessionmaker[Async
     async with factory() as session:
         with pytest.raises(TenantContextMissing):
             await session.execute(sa.insert(Item).values(id=uuid7(), tenant_id=uuid7(), name="x"))
+
+
+async def test_write_paths_are_denied_by_default(
+    admin_engine: AsyncEngine, factory: async_sessionmaker[AsyncSession]
+) -> None:
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    tenant_a, tenant_b = uuid7(), uuid7()
+    row_b = await _seed_item(admin_engine, tenant_b, "victim")
+    cols = [c.name for c in Item.__table__.c]
+    values = {
+        "id": uuid7(),
+        "tenant_id": tenant_b,
+        "name": "pos",
+        "version": 1,
+        "custom_fields": {},
+    }
+    positional = tuple(values.get(c) for c in cols)
+    table = Item.__table__
+    cases: dict[str, tuple[Any, Any]] = {
+        "upsert_do_update": (
+            pg_insert(Item)
+            .values(id=row_b, name="x")
+            .on_conflict_do_update(index_elements=["id"], set_={"name": "pwned"}),
+            None,
+        ),
+        "upsert_do_nothing": (
+            pg_insert(Item).values(id=uuid7(), name="x").on_conflict_do_nothing(),
+            None,
+        ),
+        "bulk_update_by_pk": (sa.update(Item), [{"id": row_b, "name": "pwned"}]),
+        "bulk_delete_list": (sa.delete(Item), [{"id": row_b}]),
+        "bindparam_override": (
+            sa.insert(Item).values(
+                id=uuid7(), name="bp", tenant_id=sa.bindparam("t", value=tenant_a)
+            ),
+            {"t": tenant_b},
+        ),
+        "literal_own_tenant": (
+            sa.insert(Item).values(id=uuid7(), name="l", tenant_id=sa.literal(tenant_a)),
+            None,
+        ),
+        "multi_values_dicts": (
+            sa.insert(Item).values(
+                [
+                    {"id": uuid7(), "name": "m1", "tenant_id": tenant_a},
+                    {"id": uuid7(), "name": "m2", "tenant_id": tenant_b},
+                ]
+            ),
+            None,
+        ),
+        "multi_values_positional": (sa.insert(Item).values([positional]), None),
+        "executemany_mixed": (
+            sa.insert(Item),
+            [{"id": uuid7(), "name": "e1"}, {"id": uuid7(), "name": "e2", "tenant_id": tenant_b}],
+        ),
+        "core_table_tenant_id": (
+            sa.insert(table).values(id=uuid7(), name="c", tenant_id=tenant_b),
+            None,
+        ),
+    }
+    for label, (stmt, params) in cases.items():
+        async with factory() as session:
+            with tenant_context(tenant_a):
+                with pytest.raises(TenantMismatchError):
+                    await session.execute(stmt, params)
+                await session.rollback()
+        assert await _raw_name(admin_engine, row_b) == "victim", label
+    assert await _count_rows(admin_engine, tenant_b) == 1
+    assert await _count_rows(admin_engine, tenant_a) == 0
+
+
+async def test_repository_create_still_works(factory: async_sessionmaker[AsyncSession]) -> None:
+    from tests.integration.models import ItemRepository
+
+    tenant_a = uuid7()
+    async with factory() as session:
+        with tenant_context(tenant_a):
+            created = await ItemRepository(session).create({"name": "via-repo"})
+            assert created.tenant_id == tenant_a
+            await session.commit()

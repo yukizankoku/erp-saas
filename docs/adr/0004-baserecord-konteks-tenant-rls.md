@@ -125,8 +125,11 @@ Lapis 1 tidak lagi hanya konvensi `TenantRepository.select()`: `core/tenancy/orm
   mencakup lazy load, selectin, refresh, alias. Nilai tenant = bound parameter (cache dibagi antar tenant). Tanpa
   konteks → `TenantContextMissing` bila statement mereferensikan tabel milik `BaseRecord`; statement lain jalan normal.
   Tidak ada opsi bypass (§2).
-- Tulis: INSERT/UPDATE `BaseRecord` dengan `tenant_id` eksplisit ≠ konteks (`.values()` / params executemany) ditolak,
-  `tenant_id` di SET UPDATE ditolak, `INSERT ... FROM SELECT` ditolak (`TenantMismatchError`).
+- Tulis (deny by default, `TenantMismatchError`): INSERT ke tabel `BaseRecord` tidak boleh membawa `tenant_id` eksplisit
+  (`.values()`, bindparam, params dict/list; sumber satu-satunya = default kolom dari konteks), tanpa baris posisional,
+  tanpa `INSERT ... FROM SELECT`, tanpa `ON CONFLICT` (upsert masa depan = helper repository, bukan statement bebas).
+  UPDATE/DELETE: params berupa list (bulk-by-PK) ditolak; `tenant_id` di SET UPDATE ditolak. `TenantRepository.create`
+  mengisi `tenant_id` pada objek ORM lewat flush (unit-of-work), bukan `insert()`, sehingga tidak terpengaruh.
 - Identity map: `Session.get` dibungkus — tanpa konteks → error; hit milik tenant lain → expunge + `None`. Awal transaksi
   non-nested dan `ensure_tenant_bound` meng-expunge instance `BaseRecord` yang `tenant_id`-nya asing **atau tidak termuat**
   (expired; dimuat ulang lewat filter bila dipakai lagi).

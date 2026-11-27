@@ -20,8 +20,11 @@ Terdaftar global pada `Session` saat modul diimpor (`app.core.tenancy.session` m
    diubah (history) ditolak; flush `BaseRecord` tanpa konteks → `TenantContextMissing`.
 4. Kriteria dipasang pada SETIAP SELECT/UPDATE/DELETE ORM bila ada konteks (subquery, EXISTS,
    UNION, `count()` tidak terlihat oleh `all_mappers`). Tanpa konteks → error hanya bila statement
-   mereferensikan tabel milik `BaseRecord`. INSERT/UPDATE ke `BaseRecord`: `tenant_id` eksplisit ≠
-   konteks ditolak, `tenant_id` di SET UPDATE ditolak, `INSERT ... FROM SELECT` ditolak.
+   mereferensikan tabel `BaseRecord`. Penulisan ORM ke tabel `BaseRecord` = deny by default:
+   INSERT tanpa `tenant_id` eksplisit (values/bindparam/params; default konteks satu-satunya
+   sumber), tanpa ON CONFLICT, tanpa FROM SELECT, tanpa baris posisional; UPDATE/DELETE tanpa
+   params list (bulk-by-PK) dan UPDATE tanpa `tenant_id` di SET. Upsert masa depan = helper
+   repository.
 5. Transaksi yang sudah terikat ke tenant lain dan dipakai di konteks berbeda → `TenantRebindError`
    (execute, get, flush; termasuk `merge`).
 
@@ -59,28 +62,37 @@ class TenantMismatchError(RuntimeError):
         super().__init__("record tenant_id does not match the active tenant context")
 
 
-def _record_classes() -> list[type[BaseRecord]]:
-    found: list[type[BaseRecord]] = []
+_RECORD_TABLES: set[Table] = set()
+
+
+def _remember_table(mapper: Any, class_: type) -> None:
+    table = mapper.local_table
+    if isinstance(table, Table):
+        _RECORD_TABLES.add(table)
+
+
+# Cache tabel `BaseRecord` (cocokkan lewat identitas objek Table): terisi saat kelas dipetakan.
+event.listen(BaseRecord, "instrument_class", _remember_table, propagate=True)
+
+
+def _seed_existing_tables() -> None:
+    """Model yang sudah dipetakan sebelum modul ini diimpor."""
     stack = list(BaseRecord.__subclasses__())
     while stack:
         cls = stack.pop()
         stack.extend(cls.__subclasses__())
-        if "__mapper__" in cls.__dict__ or hasattr(cls, "__mapper__"):
-            found.append(cls)
-    return found
+        if hasattr(cls, "__mapper__"):
+            _remember_table(cls.__mapper__, cls)
+
+
+_seed_existing_tables()
 
 
 def _references_records(state: ORMExecuteState) -> bool:
     if any(issubclass(m.class_, BaseRecord) for m in state.all_mappers):
         return True
-    names = {
-        t.name
-        for cls in _record_classes()
-        for t in [inspect(cls).local_table]
-        if isinstance(t, Table)
-    }
     stmt: Any = state.statement
-    return any(isinstance(el, Table) and el.name in names for el in visitors.iterate(stmt))
+    return any(el in _RECORD_TABLES for el in visitors.iterate(stmt) if isinstance(el, Table))
 
 
 def _check_not_rebound(session: Session, tenant_id: UUID) -> None:
@@ -98,35 +110,44 @@ def _tenant_criteria(tenant_id: UUID) -> Any:
     )
 
 
-def _check_write(state: ORMExecuteState, tenant_id: UUID) -> None:
-    stmt = state.statement
-    if state.is_insert and getattr(stmt, "select", None) is not None:
-        raise TenantMismatchError()  # INSERT ... FROM SELECT tidak bisa diverifikasi
+def _check_write(state: ORMExecuteState) -> None:
+    """Tolak-secara-default untuk penulisan ORM ke tabel `BaseRecord`.
+
+    INSERT: `tenant_id` tidak boleh eksplisit di mana pun (values / bindparam / params); satu-
+    satunya sumber adalah default kolom dari konteks. Tanpa ON CONFLICT, FROM SELECT, atau baris
+    posisional. UPDATE/DELETE: tanpa params berupa list (bulk-by-PK); UPDATE tanpa `tenant_id`.
+    """
+    stmt: Any = state.statement
     params = state.parameters
-    batches = [params] if isinstance(params, dict) else list(params or [])
-    for row in batches:
-        if "tenant_id" in row and row["tenant_id"] != tenant_id:  # type: ignore[index]
-            raise TenantMismatchError()
-    for _key, value in _set_values(stmt):
-        # INSERT: hanya literal = tenant konteks; UPDATE: tidak boleh men-SET tenant_id.
-        if state.is_update or getattr(value, "value", None) != tenant_id:
-            raise TenantMismatchError()
-    if state.is_update and any("tenant_id" in row for row in batches):
+    if state.is_insert:
+        if (
+            getattr(stmt, "select", None) is not None
+            or getattr(stmt, "_post_values_clause", None) is not None
+        ):
+            raise TenantMismatchError()  # FROM SELECT / ON CONFLICT tidak bisa diverifikasi
+    elif isinstance(params, list | tuple):
+        raise TenantMismatchError()  # executemany / bulk update-by-PK
+    rows = [params] if isinstance(params, dict) else list(params or [])
+    if any(not isinstance(row, dict) or "tenant_id" in row for row in rows):
+        raise TenantMismatchError()
+    if _set_values(stmt):
         raise TenantMismatchError()
 
 
-def _set_values(stmt: Any) -> list[tuple[str, Any]]:
-    """Pasangan (nama kolom, nilai) untuk `tenant_id` pada `.values()` / `ordered_values()`.
+def _set_values(stmt: Any) -> list[str]:
+    """Nama `tenant_id` pada `.values()` / `ordered_values()`; baris multi non-dict = terlarang.
 
     Memakai atribut internal `_values` / `_multi_values` / `_ordered_values` karena `compile()`
     gagal untuk INSERT ORM bulk; dijaga test regresi saat upgrade SQLAlchemy.
     """
-    pairs: list[tuple[Any, Any]] = list((getattr(stmt, "_values", None) or {}).items())
-    pairs += list(getattr(stmt, "_ordered_values", None) or [])
+    pairs: list[Any] = list((getattr(stmt, "_values", None) or {}).keys())
+    pairs += [k for k, _ in getattr(stmt, "_ordered_values", None) or []]
     for group in getattr(stmt, "_multi_values", None) or ():
         for row in group:
-            pairs += list(row.items()) if isinstance(row, dict) else []
-    return [(k, v) for k, v in ((getattr(k, "key", k), v) for k, v in pairs) if k == "tenant_id"]
+            if not isinstance(row, dict):
+                return ["positional"]
+            pairs += list(row.keys())
+    return [k for k in (getattr(k, "key", k) for k in pairs) if k == "tenant_id"]
 
 
 @event.listens_for(Session, "do_orm_execute")
@@ -139,8 +160,8 @@ def _apply_tenant_filter(state: ORMExecuteState) -> None:
             raise TenantContextMissing()
         return
     _check_not_rebound(state.session, ctx.tenant_id)
-    if (state.is_insert or state.is_update) and _references_records(state):
-        _check_write(state, ctx.tenant_id)
+    if (state.is_insert or state.is_update or state.is_delete) and _references_records(state):
+        _check_write(state)
     if not state.is_insert:
         # Tanpa syarat `all_mappers`: subquery/EXISTS/UNION/count() tak terlihat di sana.
         state.statement = state.statement.options(_tenant_criteria(ctx.tenant_id))
