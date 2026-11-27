@@ -2,9 +2,9 @@
 
 > Diperbarui setiap checkpoint oleh PM Agent. Maks. 150 baris; ganti isi lama, jangan menumpuk riwayat.
 
-**Diperbarui:** 2026-11-25 01:50 WIB (run manual 2026-11-24T2102 ditutup; dilanjutkan runner terjadwal)
+**Diperbarui:** 2026-11-28 00:30 WIB (run 2026-11-28T0009 berjalan)
 **Fase aktif:** 1 — Platform Inti · **Mode:** active
-**Batas pemakaian:** berhenti bila mingguan ≥ 65% pada Sen–Jum; Sabtu & Minggu WIB tanpa batas (s.d. 100%) — keputusan PO 25 Nov. Terakhir: mingguan 70% (25 Nov 18:08 WIB, run 18:07 NO-GO); reset Sen 30 Nov 07:00 WIB.
+**Batas pemakaian:** berhenti bila mingguan ≥ 65% Sen–Jum; Sab–Min WIB s.d. 100% (keputusan PO 25 Nov). Terakhir: mingguan 79% (28 Nov 00:24 WIB); reset Sen 30 Nov 07:00 WIB.
 
 ## Selesai
 - Fase 0 lengkap (PRD v0.3, monorepo, CI, agent ops, ADR 0001–0003, runner + jadwal).
@@ -14,12 +14,14 @@
 - Neon: `neon init` + `neon deploy` OK; backend tersambung (PR #30) — `DATABASE_URL` pooled / `DATABASE_URL_UNPOOLED` direct.
 - Vercel: preview deploy hijau (PR #32): web statis + FastAPI di `/api/*`, region sin1.
 - Neon end-to-end terbukti lewat `neon-smoke` (PR #31): migrasi + /health/db ok.
-- #34 role `app_runtime` dibuat di Neon produksi (PR #39): direct & pooled → app_runtime|f|f.
+- #34 role `app_runtime` dibuat di Neon produksi (PR #39) + `APP_DATABASE_URL` mengalahkan URL integrasi (PR #40).
+- `neon-smoke` post-job cleanup diperbaiki (PR #43). #2 ditutup.
 
 ## Berikutnya (urutan)
-1. #36 P1-01d filter tenant otomatis di level ORM (wajib sebelum tabel bisnis pertama).
-2. #37 P1-01e FK komposit (tenant_id, x_id) + amandemen ADR 0004.
-3. #10 P1-09 Ports & adapters.
+1. #10 P1-09 Ports & adapters — bagian A (interface + adapter dev/in-memory) sedang dikerjakan; bagian B = job queue Postgres.
+2. #36 P1-01d filter ORM — **blocked** (PR #44 terbuka, 139 test hijau): 2 temuan high putaran 3 (DML di CTE;
+   UPDATE/DELETE unit-of-work pada objek buatan manual). Usulan perbaikan di komentar #36. Lanjutkan setelah PO melihat.
+3. #37 P1-01e FK komposit (tenant_id, x_id) + amandemen ADR 0004 (juga menutup referensi FK lintas tenant).
 4. #3 P1-02 Tenant/company/branch/warehouse (bergantung #36, #37).
 
 ## Menunggu PO
