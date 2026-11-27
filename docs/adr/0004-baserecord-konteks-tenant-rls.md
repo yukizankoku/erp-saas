@@ -117,6 +117,22 @@ class TenantRepository[T: BaseRecord]:
 - `soft_delete`: isi `deleted_*` + `delete_batch_id = batch_id or uuid7()`, kembalikan batch id (restore massal §7.0);
   `version` ikut naik → terlihat sinkron (§6.6). `list`: offset, `ORDER BY id DESC`, `items` + `has_more` (tanpa `COUNT`).
 
+### 7a. Filter tenant otomatis di ORM (amandemen, #36)
+Lapis 1 tidak lagi hanya konvensi `TenantRepository.select()`: `core/tenancy/orm_filter.py` terdaftar global pada
+`Session` (diimpor oleh `session.py`, jadi ikut setiap pemakai repository).
+- `do_orm_execute`: SELECT / bulk UPDATE / bulk DELETE ORM yang menyentuh mapper `BaseRecord` (termasuk lazy load,
+  selectin, refresh kolom, alias) mendapat `with_loader_criteria(BaseRecord, tenant_id = <konteks>)`; nilai tenant
+  berupa bound parameter (cache kompilasi dibagi antar tenant). Tanpa konteks → `TenantContextMissing` (bukan hasil
+  kosong). Tidak ada opsi bypass (lihat §2).
+- Identity map: `session.get()` yang kena cache tidak menjalankan query, jadi `Session.get` dibungkus — tanpa konteks
+  → error; hasil milik tenant lain → di-expunge dan `None`. Tambahan: awal transaksi non-nested dan
+  `ensure_tenant_bound` meng-expunge instance `BaseRecord` tenant lain. Instance expired di-refresh lewat filter di atas.
+- `before_flush`: objek baru/berubah/dihapus dengan `tenant_id` ≠ konteks → `TenantMismatchError`; flush `BaseRecord`
+  tanpa konteks → `TenantContextMissing`. Objek baru tanpa `tenant_id` diisi default dari konteks.
+- **Batas:** statement Core, `text()`, dan objek `Table` tidak punya mapper sehingga tidak difilter → lapis 2 (RLS) tetap
+  penahan terakhir, ditambah aturan: kode bisnis hanya lewat repository. Test lapis 1 berjalan di engine superuser
+  (RLS tidak berlaku) agar terbukti berdiri sendiri.
+
 ### 8. Strategi test
 - PostgreSQL nyata (CI service / `scripts/dev_pg.sh`); tanpa `DATABASE_URL` skip di lokal, **gagal** bila `CI=true`.
   Engine fixture `admin` (superuser: DDL, role, seed) + `app` yang `SET ROLE app_rls_test` saat connect → **semua**

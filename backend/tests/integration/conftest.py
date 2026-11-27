@@ -27,7 +27,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.db import engine_options, to_async_url
 from app.core.tenancy.rls import tenant_rls_sql
-from tests.integration.models import IntegrationBase, Item
+from tests.integration.models import IntegrationBase, Item, ItemChild
 
 APP_TEST_ROLE = "app_rls_test"
 
@@ -79,14 +79,15 @@ async def _setup(url: str) -> None:
                 await conn.execute(text(statement))
             await conn.run_sync(IntegrationBase.metadata.drop_all)
             await conn.run_sync(IntegrationBase.metadata.create_all)
-            for statement in tenant_rls_sql(Item.__tablename__):
-                await conn.execute(text(statement))
-            await conn.execute(
-                text(
-                    f"GRANT SELECT, INSERT, UPDATE, DELETE ON {Item.__tablename__} "
-                    f"TO {APP_TEST_ROLE}"
+            for model in (Item, ItemChild):
+                for statement in tenant_rls_sql(model.__tablename__):
+                    await conn.execute(text(statement))
+                await conn.execute(
+                    text(
+                        f"GRANT SELECT, INSERT, UPDATE, DELETE ON {model.__tablename__} "
+                        f"TO {APP_TEST_ROLE}"
+                    )
                 )
-            )
     finally:
         await engine.dispose()
 

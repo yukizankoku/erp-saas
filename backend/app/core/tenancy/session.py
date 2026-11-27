@@ -12,7 +12,8 @@ dan GUC tidak lagi sinkron (query diam-diam 0 baris, atau berjalan sebagai tenan
 mewarisi binding transaksi induk; konteks tenant yang berbeda → `TenantRebindError`.
 
 Listener terdaftar global pada `Session` (Session sinkron di balik `AsyncSession`) saat modul ini
-diimpor; `app.framework.repository` mengimpornya sehingga setiap pemakai repository terlindungi.
+diimpor, begitu pula filter tenant ORM (`orm_filter`); `app.framework.repository` mengimpornya
+sehingga setiap pemakai repository terlindungi.
 """
 
 from uuid import UUID
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, SessionTransaction
 
 from app.core.tenancy.context import get_context, require_tenant_id
+from app.core.tenancy.orm_filter import purge_foreign_records
 
 SESSION_INFO_KEY = "rls_tenant_id"
 SET_TENANT_SQL = text("SELECT set_config('app.tenant_id', :tid, true)")
@@ -53,6 +55,8 @@ def _bind_tenant(session: Session, transaction: SessionTransaction, connection: 
             raise TenantRebindError(_SAVEPOINT_BIND)
         return
     session.info[SESSION_INFO_KEY] = ctx.tenant_id if ctx is not None else None
+    # Identity map tidak melewati filter ORM → buang instance tenant lain (ADR 0004 §7a).
+    purge_foreign_records(session, ctx.tenant_id if ctx is not None else None)
     if ctx is not None:
         connection.execute(SET_TENANT_SQL, {"tid": str(ctx.tenant_id)})
 
@@ -76,4 +80,5 @@ async def ensure_tenant_bound(session: AsyncSession) -> UUID:
         raise TenantRebindError(_SAVEPOINT_BIND)
     await session.execute(SET_TENANT_SQL, {"tid": str(tenant_id)})
     session.info[SESSION_INFO_KEY] = tenant_id
+    purge_foreign_records(session.sync_session, tenant_id)
     return tenant_id
