@@ -90,7 +90,10 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         working-directory: backend
         run: |
-          uv run uvicorn app.main:app --port 8000 > /tmp/uvicorn.log 2>&1 &
+          # Langsung dari .venv (bukan `uv run`): proses uv latar belakang menahan lock cache uv
+          # sehingga `uv cache prune` di post-job setup-uv timeout dan job gagal.
+          .venv/bin/uvicorn app.main:app --port 8000 > /tmp/uvicorn.log 2>&1 &
+          echo $! > /tmp/uvicorn.pid
           for i in $(seq 1 40); do curl -sf http://127.0.0.1:8000/api/v1/health > /dev/null && break; sleep 0.5; done
           body=$(curl -s -w ' HTTP %{http_code}' http://127.0.0.1:8000/api/v1/health/db)
           echo "GET /api/v1/health/db → $body"
@@ -119,6 +122,11 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         working-directory: backend
         run: uv run pytest -q tests/test_health.py
+
+      - name: Hentikan API
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          if [ -f /tmp/uvicorn.pid ]; then kill "$(cat /tmp/uvicorn.pid)" 2>/dev/null || true; fi
 
       - name: Hapus branch Neon sementara
         if: always() && steps.branch.outputs.created == 'true'
