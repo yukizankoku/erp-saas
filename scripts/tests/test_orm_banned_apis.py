@@ -20,6 +20,8 @@ def violations(src: str) -> list[str]:
         "c = pg_insert(Item).values(name='x').returning(Item.id).cte()",
         "c = update(Item).where(Item.id == 1).values(name='x').returning(Item.id).cte()",
         "c = sa.delete(Item).returning(Item.id).cte()",
+        "c = sa.cte(insert(Item).values(name='x').returning(Item.id))",
+        "c = cte(update(Item).values(name='x').returning(Item.id), name='u')",
     ],
 )
 def test_dml_cte_is_banned(src: str) -> None:
@@ -39,10 +41,20 @@ def test_make_transient_to_detached_is_banned(src: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "src", ["session.merge(obj, load=False)", "await s.merge(obj, options=[], load=False)"]
+    "src",
+    [
+        "session.merge(obj, load=False)",
+        "await s.merge(obj, options=[], load=False)",
+        "session.merge(obj, load=flag)",
+        "session.merge(obj, **kw)",
+    ],
 )
 def test_merge_without_load_is_banned(src: str) -> None:
     assert violations(src) == ["merge(..., load=False)"]
+
+
+def test_merge_all_without_load_is_banned() -> None:
+    assert violations("session.merge_all(objs, load=False)") == ["merge_all(..., load=False)"]
 
 
 @pytest.mark.parametrize(
@@ -52,6 +64,9 @@ def test_merge_without_load_is_banned(src: str) -> None:
         "q = sa.select(Item).where(Item.id == 1).cte('x')",
         "session.merge(obj)",
         "session.merge(obj, load=True)",
+        "session.merge_all(objs)",
+        "c = sa.cte(select(Item.id))",
+        "d.update(x=1)",
         "stmt = insert(Item).values(name='x').returning(Item.id)",
         "x = make_transient(obj)",
     ],
@@ -68,8 +83,17 @@ def test_main_scans_tree_and_skips_framework(tmp_path: Path) -> None:
     internal.parent.mkdir(parents=True)
     internal.write_text("from sqlalchemy.orm import make_transient_to_detached\n")
     assert chk.main([str(tmp_path / "app")]) == 1
+    nested = tmp_path / "app" / "modules" / "x" / "framework" / "util.py"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("from sqlalchemy.orm import make_transient_to_detached\n")
     bad.write_text("session.merge(obj)\n")
+    assert chk.main([str(tmp_path / "app")]) == 1  # hanya <root>/framework yang dikecualikan
+    nested.write_text("x = 1\n")
     assert chk.main([str(tmp_path / "app")]) == 0
+
+
+def test_missing_path_is_an_error(tmp_path: Path) -> None:
+    assert chk.main([str(tmp_path / "nope")]) == 2
 
 
 def test_application_code_is_clean() -> None:
