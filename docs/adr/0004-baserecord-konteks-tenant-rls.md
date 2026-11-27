@@ -117,6 +117,36 @@ class TenantRepository[T: BaseRecord]:
 - `soft_delete`: isi `deleted_*` + `delete_batch_id = batch_id or uuid7()`, kembalikan batch id (restore massal §7.0);
   `version` ikut naik → terlihat sinkron (§6.6). `list`: offset, `ORDER BY id DESC`, `items` + `has_more` (tanpa `COUNT`).
 
+### 7a. Filter tenant otomatis di ORM (amandemen, #36)
+Lapis 1 tidak lagi hanya konvensi `TenantRepository.select()`: `core/tenancy/orm_filter.py` terdaftar global pada
+`Session` (diimpor oleh `session.py`, jadi ikut setiap pemakai repository).
+- `do_orm_execute`: **setiap** SELECT / bulk UPDATE / bulk DELETE ORM mendapat `with_loader_criteria(BaseRecord,
+  tenant_id = <konteks>)` bila ada konteks (tanpa syarat `all_mappers`, yang tidak melihat subquery/EXISTS/UNION/`count()`);
+  mencakup lazy load, selectin, refresh, alias. Nilai tenant = bound parameter (cache dibagi antar tenant). Tanpa
+  konteks → `TenantContextMissing` bila statement mereferensikan tabel milik `BaseRecord`; statement lain jalan normal.
+  Tidak ada opsi bypass (§2).
+- Tulis (deny by default, `TenantMismatchError`): INSERT ke tabel `BaseRecord` tidak boleh membawa `tenant_id` eksplisit
+  (`.values()`, bindparam, params dict/list; sumber satu-satunya = default kolom dari konteks), tanpa baris posisional,
+  tanpa `INSERT ... FROM SELECT`, tanpa `ON CONFLICT` (upsert masa depan = helper repository, bukan statement bebas).
+  UPDATE/DELETE: params berupa list (bulk-by-PK) ditolak; `tenant_id` di SET UPDATE ditolak. `TenantRepository.create`
+  mengisi `tenant_id` pada objek ORM lewat flush (unit-of-work), bukan `insert()`, sehingga tidak terpengaruh.
+- Identity map: `Session.get` dibungkus — tanpa konteks → error; hit milik tenant lain → expunge + `None`. Awal transaksi
+  non-nested dan `ensure_tenant_bound` meng-expunge instance `BaseRecord` yang `tenant_id`-nya asing **atau tidak termuat**
+  (expired; dimuat ulang lewat filter bila dipakai lagi).
+- `before_flush`: objek baru/berubah/dihapus dengan `tenant_id` ≠ konteks → `TenantMismatchError`; objek persistent
+  yang `tenant_id`-nya tidak termuat atau berubah (history) ditolak; flush tanpa konteks → `TenantContextMissing`.
+  Transaksi yang sudah terikat tenant lain dipakai di konteks berbeda → `TenantRebindError` (execute, get, flush, merge).
+  Binding `session.info` dibersihkan di akhir transaksi root.
+- **Batas:** statement Core, `text()`, dan objek `Table` tidak difilter → lapis 2 (RLS) penahan terakhir + aturan kode
+  bisnis hanya lewat repository. `session.query(...).get()` (legacy) melewati pembungkus `get`: `session.query` dilarang
+  di kode bisnis. Test lapis 1 berjalan di engine superuser (RLS tidak berlaku).
+- **Celah lapis 1 yang diketahui** (review security PR #44, keputusan PO 28 Nov: merge bertahap, lapis 2 aktif):
+  DML di dalam CTE dan UPDATE/DELETE unit-of-work pada objek yang identitasnya dibuat manual
+  (`make_transient_to_detached`, `merge(load=False)`). Ketiganya **dilarang di `backend/app/**`** (kecuali
+  `app/framework/`) oleh `scripts/check_orm_banned_apis.py` (AST, langkah CI `backend`). Pemeriksaan hanya melihat
+  rantai langsung `insert(...)….cte()`; statement DML yang disimpan di variabel lalu `.cte()` tidak terdeteksi →
+  review kode. Perbaikan di lapis 1 dilacak di issue lanjutan.
+
 ### 8. Strategi test
 - PostgreSQL nyata (CI service / `scripts/dev_pg.sh`); tanpa `DATABASE_URL` skip di lokal, **gagal** bila `CI=true`.
   Engine fixture `admin` (superuser: DDL, role, seed) + `app` yang `SET ROLE app_rls_test` saat connect → **semua**

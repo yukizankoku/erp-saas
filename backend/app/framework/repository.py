@@ -1,8 +1,9 @@
 """`TenantRepository[T]`: akses data model `BaseRecord` yang selalu ter-scope tenant (ADR 0004 §7).
 
-Lapis 1 isolasi tenant (filter aplikasi); lapis 2 = RLS PostgreSQL. Setiap metode memanggil
-`ensure_tenant_bound()` lalu menyusun query dari `self.select()` (sudah berisi
-`tenant_id = konteks AND deleted_at IS NULL`) — subclass wajib melakukan hal yang sama, jangan
+Lapis 1 isolasi tenant (filter aplikasi; kini juga otomatis di ORM lewat `orm_filter`, ADR 0004
+§7a); lapis 2 = RLS PostgreSQL. Setiap metode memanggil `ensure_tenant_bound()` lalu menyusun query
+dari `self.select()` (sudah berisi `tenant_id = konteks AND deleted_at IS NULL`) — subclass tetap
+wajib melakukan hal yang sama (statement Core/`text()` tidak difilter ORM), jangan
 `sa.select(Model)` langsung. Record tenant lain = tidak ada (None / 404, bukan 403).
 
 Repository hanya `flush()`; commit/rollback milik dependency sesi atau service. Setelah

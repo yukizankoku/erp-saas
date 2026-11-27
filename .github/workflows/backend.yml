@@ -64,7 +64,9 @@ jobs:
           diff <(grep -v '^#' /tmp/requirements.txt) <(grep -v '^#' ../requirements.txt) \
             || { echo "::error::Jalankan: cd backend && uv export --frozen --no-dev --no-hashes --no-emit-project -o ../requirements.txt"; exit 1; }
       - name: Type-check
-        run: uv run mypy app && uv run mypy --strict ../scripts/agent_preflight.py ../scripts/agent_lock.py
+        run: uv run mypy app && uv run mypy --strict ../scripts/agent_preflight.py ../scripts/agent_lock.py ../scripts/check_orm_banned_apis.py
+      - name: API ORM terlarang (ADR 0004 §7a, #36)
+        run: uv run python ../scripts/check_orm_banned_apis.py app
       - name: Test
         run: uv run pytest && uv run pytest ../scripts/tests
       - name: Migrasi (upgrade → check → downgrade → upgrade)
