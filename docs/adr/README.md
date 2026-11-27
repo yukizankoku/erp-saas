@@ -9,3 +9,4 @@ ADR tidak diedit setelah diterima — keputusan baru yang menggantikan ditulis s
 | 0002 | Lock antar-run agent via branch git | Diterima |
 | 0003 | Run otomatis lewat satu sesi runner persisten | Diterima |
 | 0004 | BaseRecord, konteks tenant, dan RLS | Diusulkan |
+| 0005 | Ports & adapters infrastruktur (bagian A) | Diusulkan |

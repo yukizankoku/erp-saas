@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app import __version__
 from app.core.config import get_settings
 from app.core.db import get_engine
+from app.core.ports.providers import warn_unsafe_backends
 
 # Mendaftarkan listener `after_begin` (set_config app.tenant_id per transaksi) untuk semua Session.
 from app.core.tenancy import session as _tenancy_session  # noqa: F401
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
         redoc_url=None,
     )
     register_record_error_handlers(app)
+    warn_unsafe_backends(settings)
 
     @app.get(f"{settings.api_prefix}/health", response_model=HealthResponse, tags=["system"])
     async def health() -> HealthResponse:
