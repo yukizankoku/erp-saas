@@ -48,6 +48,15 @@ class Settings(BaseSettings):
 
     api_prefix: str = "/api/v1"
 
+    # Ports & adapters (ADR 0005). Nilai tak dikenal ditolak saat provider dibangun.
+    storage_backend: str = "local"  # local | memory
+    mailer_backend: str = "console"  # console | memory
+    jobqueue_backend: str = "memory"  # memory
+    realtime_backend: str = "memory"  # memory
+    storage_local_root: str = ".data/storage"
+    # Rahasia penanda-tangan URL lokal. Kosong = acak per proses (URL tak valid setelah restart).
+    storage_signing_secret: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:
