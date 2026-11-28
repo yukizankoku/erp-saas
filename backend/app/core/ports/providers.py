@@ -4,12 +4,16 @@ import logging
 from collections.abc import Callable
 from functools import lru_cache
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from app.core.adapters.jobs import MemoryJobQueue
 from app.core.adapters.mailer import ConsoleMailer, MemoryMailer
 from app.core.adapters.pdf import UnavailablePdfRenderer
+from app.core.adapters.pg_jobs import PostgresJobQueue, PostgresJobRunner
 from app.core.adapters.realtime import MemoryRealtime
 from app.core.adapters.storage import LocalFileStorage, MemoryStorage, UrlSigner
 from app.core.config import Settings, get_settings
+from app.core.db import get_engine
 from app.core.ports.jobs import JobQueue, JobRunner
 from app.core.ports.mailer import Mailer
 from app.core.ports.pdf import PdfRenderer
@@ -48,8 +52,25 @@ def build_mailer(s: Settings) -> Mailer:
     return _choose("MAILER_BACKEND", s.mailer_backend, options)
 
 
-def build_job_queue(s: Settings) -> MemoryJobQueue:
-    return _choose("JOBQUEUE_BACKEND", s.jobqueue_backend, {"memory": MemoryJobQueue})
+def build_job_queue(s: Settings) -> JobQueue:
+    # Postgres: engine dibuat saat pertama dipakai (bukan saat build) dan memakai role aplikasi.
+    options: dict[str, Callable[[], JobQueue]] = {
+        "memory": MemoryJobQueue,
+        "postgres": lambda: PostgresJobQueue(_pg_sessions()),
+    }
+    return _choose("JOBQUEUE_BACKEND", s.jobqueue_backend, options)
+
+
+def _pg_sessions() -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(get_engine(), expire_on_commit=False)
+
+
+def build_job_runner(s: Settings) -> JobRunner:
+    if s.jobqueue_backend == "postgres":
+        return PostgresJobRunner(_pg_sessions(), lease_seconds=s.job_lease_seconds)
+    backend = _job_backend()  # memory (atau nilai tak dikenal -> UnknownBackendError)
+    assert isinstance(backend, JobRunner)
+    return backend
 
 
 def build_realtime(s: Settings) -> Realtime:
@@ -70,7 +91,7 @@ def unsafe_reasons(s: Settings) -> dict[str, str]:
     dev = {
         "storage": (s.storage_backend, {"local", "memory"}),
         "mailer": (s.mailer_backend, {"console", "memory"}),
-        "jobqueue": (s.jobqueue_backend, {"memory"}),
+        "jobqueue": (s.jobqueue_backend, {"memory"}),  # "postgres" aman
         "realtime": (s.realtime_backend, {"memory"}),
     }
     out = {
@@ -112,8 +133,13 @@ def get_mailer() -> Mailer:
 
 
 @lru_cache
-def _job_backend() -> MemoryJobQueue:
+def _job_backend() -> JobQueue:
     return build_job_queue(get_settings())
+
+
+@lru_cache
+def _job_runner() -> JobRunner:
+    return build_job_runner(get_settings())
 
 
 def get_job_queue() -> JobQueue:
@@ -123,7 +149,7 @@ def get_job_queue() -> JobQueue:
 
 def get_job_runner() -> JobRunner:
     _guard(get_settings(), "jobqueue")
-    return _job_backend()
+    return _job_runner()
 
 
 @lru_cache

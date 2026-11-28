@@ -56,6 +56,7 @@ class JobQueue(Protocol):
         *,
         run_at: datetime | None = None,
         max_attempts: int = 5,
+        idempotency_key: str | None = None,
     ) -> str: ...
 
 

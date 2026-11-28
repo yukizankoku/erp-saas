@@ -21,6 +21,7 @@ from app.core.ports import (
     ObjectStorage,
     PdfRenderer,
     Realtime,
+    tenant_channel,
     tenant_key,
 )
 from app.core.ports.jobs import HandlerRegistry, backoff_seconds
@@ -253,15 +254,35 @@ def test_duplicate_handler_rejected() -> None:
 
 async def test_realtime_poll_cursor() -> None:
     rt = MemoryRealtime()
-    assert await rt.poll("c", 0) == ([], 0)
-    await rt.publish("c", {"n": 1})
-    await rt.publish("c", {"n": 2})
-    await rt.publish("other", {"n": 9})
-    events, cur = await rt.poll("c", 0)
-    assert events == [{"n": 1}, {"n": 2}] and cur == 2
-    assert await rt.poll("c", cur) == ([], 2)
-    await rt.publish("c", {"n": 3})
-    assert await rt.poll("c", cur) == ([{"n": 3}], 3)
+    with tenant_context(TID):
+        c, other = tenant_channel("c"), tenant_channel("other")
+        assert c == f"t/{TID}/c"
+        assert await rt.poll(c, 0) == ([], 0)
+        await rt.publish(c, {"n": 1})
+        await rt.publish(c, {"n": 2})
+        await rt.publish(other, {"n": 9})
+        events, cur = await rt.poll(c, 0)
+        assert events == [{"n": 1}, {"n": 2}] and cur == 2
+        assert await rt.poll(c, cur) == ([], 2)
+        await rt.publish(c, {"n": 3})
+        assert await rt.poll(c, cur) == ([{"n": 3}], 3)
+
+
+async def test_realtime_channels_are_tenant_bound() -> None:
+    rt = MemoryRealtime()
+    with tenant_context(OTHER):
+        foreign = tenant_channel("c")
+        await rt.publish(foreign, {"n": 1})
+    with tenant_context(TID):
+        for bad in (foreign, "c", f"t/{TID}", f"t/{TID}/../x"):
+            with pytest.raises(InvalidStorageKey):
+                await rt.publish(bad, {})
+            with pytest.raises(InvalidStorageKey):
+                await rt.poll(bad, 0)
+    with pytest.raises(TenantContextMissing):
+        tenant_channel("c")
+    with pytest.raises(TenantContextMissing):
+        await rt.poll(foreign, 0)
 
 
 def _settings(**kw: Any) -> Settings:
@@ -379,6 +400,8 @@ def env_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
 def test_unsafe_reasons_in_guarded_envs(env: str) -> None:
     reasons = unsafe_reasons(_settings(environment=env, storage_signing_secret="s" * 32))
     assert set(reasons) == {"storage", "mailer", "jobqueue", "realtime"}
+    pg = unsafe_reasons(_settings(environment=env, jobqueue_backend="postgres"))
+    assert "jobqueue" not in pg
     short = unsafe_reasons(_settings(environment=env, storage_backend="x", mailer_backend="smtp"))
     assert "STORAGE_SIGNING_SECRET" in short["storage"]
     assert unsafe_reasons(_settings(environment="test")) == {}
