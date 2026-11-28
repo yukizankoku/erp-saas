@@ -100,13 +100,15 @@ _REDACTIONS = (
     (
         re.compile(
             rf"(?i)({_NOT_ALNUM}[\w-]{{0,32}}{_SECRET_WORDS}[\w-]{{0,16}})"
-            r"""(["']?\s{0,5}(?:[=:]|\bis\b)\s{0,5}["']?)(?:(?:bearer|basic|token)\s{1,5})?[^\s"',;}]{1,200}"""
+            r"""(["']?\s{0,5}(?:[=:]|\bis\b)\s{0,5}["']?)"""
+            r"""(?:(?<=")[^"]{1,200}|(?<=')[^']{1,200}"""  # nilai berkutip: sampai kutip penutup
+            r"""|(?:(?:bearer|basic|token)\s{1,5})?[^\s"',;}]{1,200})"""
         ),
         r"\1\2[redacted]",
     ),
     (re.compile(rf"(?i){_NOT_ALNUM}(bearer|basic)\s{{1,5}}\S{{1,200}}"), r"\1 [redacted]"),
     (re.compile(r"(?<!\d)\d{16}(?!\d)"), "[nik]"),
-    (re.compile(r"(?<![\w])(?:\+62|62|0)8\d[\d\s-]{6,13}\d(?!\d)"), "[phone]"),
+    (re.compile(r"(?<![\w])(?:\+62|62|0)\s?8\d[\d\s-]{6,13}\d(?!\d)"), "[phone]"),
     (re.compile(r"[A-Za-z0-9_\-+/=.]{24,}"), "[redacted]"),  # token/kunci panjang
 )
 

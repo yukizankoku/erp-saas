@@ -6,6 +6,11 @@ tetapi kode bisnis tidak boleh memakainya sama sekali:
 - DML di dalam CTE: `insert(...)/update(...)/delete(...)....cte(...)` (lolos cek tulis).
 - `make_transient_to_detached` (identitas dibuat manual → UPDATE/DELETE tanpa kriteria tenant).
 - `Session.merge/merge_all(..., load=<selain True>)` (objek tidak dimuat lewat query terfilter).
+- `session.query(...)` (API legacy; di luar jalur `select()` yang difilter `orm_filter`). Heuristik
+  (AST, tanpa tipe): `X.query(...)` dengan nama akhir penerima `X` mengandung "session"
+  (`session`, `self.session`, `db_session`), atau `.query(Model, ...)` dengan argumen pertama
+  `Name` berawalan huruf kapital (kelas model). `db.query("...")` pada objek non-sesi dengan
+  argumen string tidak ditandai (minim false positive; alias sesi bernama lain bisa lolos).
 
 Pemakaian: `python scripts/check_orm_banned_apis.py [path ...]` (default `backend/app`).
 `<root>/framework/` dikecualikan (internal framework). Exit 1 bila ada temuan; exit 2 bila path
@@ -44,6 +49,17 @@ def _chain_root_is_dml(node: ast.expr) -> bool:
             return False
 
 
+def _is_legacy_query(node: ast.Call) -> bool:
+    func = node.func
+    if not (isinstance(func, ast.Attribute) and func.attr == "query"):
+        return False
+    receiver = _func_name(func.value)
+    if receiver is not None and "session" in receiver.lower():
+        return True
+    first = node.args[0] if node.args else None
+    return isinstance(first, ast.Name) and first.id[:1].isupper()
+
+
 def _is_true(node: ast.expr) -> bool:
     return isinstance(node, ast.Constant) and node.value is True
 
@@ -66,6 +82,8 @@ def find_violations(source: str, filename: str = "<string>") -> Iterator[tuple[i
                 or (node.args and _chain_root_is_dml(node.args[0]))
             ):
                 yield node.lineno, "DML di dalam CTE pada statement ORM"
+            if _is_legacy_query(node):
+                yield node.lineno, "session.query(...) (API legacy)"
             if name in MERGE_FUNCS and isinstance(node.func, ast.Attribute) and _unsafe_merge(node):
                 yield node.lineno, f"{name}(..., load=False)"
         if isinstance(node, ast.Name | ast.Attribute):
