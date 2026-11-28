@@ -18,6 +18,7 @@ from app.core.db import Base, to_async_url
 from app.core.migration_target import describe_target, select_migration_target
 
 # Import model semua modul di sini agar terdeteksi autogenerate (diisi mulai Fase 1).
+from app.modules.org import models as _org_models  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:
