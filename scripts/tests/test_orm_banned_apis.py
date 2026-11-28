@@ -53,6 +53,27 @@ def test_merge_without_load_is_banned(src: str) -> None:
     assert violations(src) == ["merge(..., load=False)"]
 
 
+@pytest.mark.parametrize(
+    "src",
+    [
+        "session.query(Item).all()",
+        "self.session.query(Item.id)",
+        "await db_session.query('x')",
+        "db.query(Item).filter_by(id=1)",
+    ],
+)
+def test_legacy_query_is_banned(src: str) -> None:
+    assert violations(src) == ["session.query(...) (API legacy)"]
+
+
+@pytest.mark.parametrize(
+    "src",
+    ["db.query('select 1')", "client.query(text)", "query(Item)", "repo.query()", "q = x.query"],
+)
+def test_non_session_query_passes(src: str) -> None:
+    assert violations(src) == []
+
+
 def test_merge_all_without_load_is_banned() -> None:
     assert violations("session.merge_all(objs, load=False)") == ["merge_all(..., load=False)"]
 

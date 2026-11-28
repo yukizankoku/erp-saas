@@ -283,6 +283,9 @@ async def test_last_error_redacted_and_truncated(
         ("client_secret=abc", "client_secret=[redacted]"),
         ("db postgresql://user:pass@dbhost/x", "db postgresql://[dsn]@dbhost/x"),
         ("Authorization: Token abc123", "Authorization: [redacted]"),
+        ("pwd: 'p@ss w0rd' end", "pwd: '[redacted]' end"),
+        ('Secret = "top s3cret" end', 'Secret = "[redacted]" end'),
+        ("call +62 812-3456-7890 now", "call [phone] now"),
         ("nik 3171234567890123 ok", "nik [nik] ok"),
         ("call +6281234567890 or 081234567890", "call [phone] or [phone]"),
         ("bad query [SQL: SELECT 1] [parameters: ('x@y.id',)]", "bad query "),
@@ -291,7 +294,8 @@ async def test_last_error_redacted_and_truncated(
 def test_redact_error_patterns(raw: str, expected: str) -> None:
     out = redact_error(RuntimeError(raw))
     assert out == f"RuntimeError: {expected}"
-    for leak in ("hunter2", "abc123", "pass@", "3171234567890123", "81234567890"):
+    leaks = ("hunter2", "abc123", "pass@", "3171234567890123", "81234567890", "w0rd", "s3cret")
+    for leak in leaks:
         assert leak not in out
 
 

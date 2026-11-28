@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.core.ids import uuid7
@@ -85,6 +86,26 @@ async def test_reference_error_keeps_other_writes_and_update_maps_too(
             kept = await repo.create({"item_id": own.id, "label": "kept"})
             await session.commit()
     assert kept.label == "kept"
+
+
+@pytest.mark.parametrize("op", ["create", "update"])
+async def test_callers_pending_invalid_write_is_not_mapped_to_reference_invalid(
+    session_factory: SessionFactory, op: str
+) -> None:
+    tenant = uuid7()
+    own = await _item(session_factory, tenant)
+    async with session_factory() as session:
+        with tenant_context(tenant):
+            repo = ChildRepository(session)
+            child = await repo.create({"item_id": own.id, "label": "c"})
+            # Tulisan tertunda pemanggil dengan FK tidak valid (belum di-flush).
+            session.add(ChildRepository.model(tenant_id=tenant, item_id=uuid7(), label="pending"))
+            with pytest.raises(IntegrityError):
+                if op == "create":
+                    await repo.create({"item_id": own.id, "label": "ok"})
+                else:
+                    await repo.update(child.id, {"label": "z"}, expected_version=child.version)
+            await session.rollback()
 
 
 async def test_reference_invalid_http_response_is_identical(

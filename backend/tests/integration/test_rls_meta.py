@@ -202,6 +202,10 @@ NON_COMPOSITE_FK_SQL = text(
         AND (SELECT a.attnum FROM pg_attribute a
              WHERE a.attrelid = c.oid AND a.attname = 'tenant_id') = ANY (k.conkey)
         AND cardinality(k.conkey) >= 2
+        AND array_position(k.conkey, (SELECT a.attnum FROM pg_attribute a
+             WHERE a.attrelid = c.oid AND a.attname = 'tenant_id'))
+          = array_position(k.confkey, (SELECT a.attnum FROM pg_attribute a
+             WHERE a.attrelid = r.oid AND a.attname = 'tenant_id'))
       )
     ORDER BY 1, 2
     """
@@ -242,6 +246,32 @@ async def test_fk_audit_flags_bad_tables(admin_engine: AsyncEngine) -> None:
         await conn.rollback()
     assert "fkp_parent: tidak ada UNIQUE (tenant_id, id)" in problems
     assert "fkp_bad: FK fkp_bad_parent_id_fkey bukan komposit tenant_id" in problems
+
+
+async def test_fk_audit_flags_swapped_tenant_position(admin_engine: AsyncEngine) -> None:
+    async with admin_engine.connect() as conn:
+        await conn.execute(
+            text(
+                "CREATE TABLE fks_parent (id uuid, tenant_id uuid, "
+                "UNIQUE (id, tenant_id), UNIQUE (tenant_id, id))"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE TABLE fks_ok (id uuid, tenant_id uuid, pid uuid, "
+                "FOREIGN KEY (tenant_id, pid) REFERENCES fks_parent (tenant_id, id))"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE TABLE fks_swapped (id uuid, tenant_id uuid, pid uuid, "
+                "FOREIGN KEY (tenant_id, pid) REFERENCES fks_parent (id, tenant_id))"
+            )
+        )
+        problems = await audit_tenant_fks(conn)
+        await conn.rollback()
+    assert "fks_swapped: FK fks_swapped_tenant_id_pid_fkey bukan komposit tenant_id" in problems
+    assert not [p for p in problems if p.startswith("fks_ok: FK")]
 
 
 async def test_audit_flags_unprotected_tenant_table(admin_engine: AsyncEngine) -> None:

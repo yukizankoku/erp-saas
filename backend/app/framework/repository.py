@@ -100,6 +100,8 @@ class TenantRepository[T: BaseRecord]:
         for key, value in values.items():
             setattr(record, key, value)
         record.tenant_id = tenant_id
+        # Flush tulisan tertunda milik pemanggil di luar savepoint: FK error-nya bukan input ini.
+        await self.session.flush()
         if "id" not in values:
             # Id dibuat server (UUIDv7) → tidak bisa bentrok; tanpa savepoint tambahan.
             try:
@@ -128,6 +130,7 @@ class TenantRepository[T: BaseRecord]:
         """Ubah record bila versinya masih `expected_version` (If-Match); versi lalu naik 1."""
         self._check_values(values, allow_id=False)
         record = await self._get_for_write(id, expected_version)
+        await self.session.flush()  # tulisan tertunda pemanggil: IntegrityError apa adanya
         try:
             # Savepoint dibuka sebelum atribut diubah (begin_nested mem-flush perubahan tertunda).
             async with self.session.begin_nested():
