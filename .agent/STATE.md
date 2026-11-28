@@ -2,9 +2,9 @@
 
 > Diperbarui setiap checkpoint oleh PM Agent. Maks. 150 baris; ganti isi lama, jangan menumpuk riwayat.
 
-**Diperbarui:** 2026-11-28 15:25 WIB (run 2026-11-28T1508 ditutup)
+**Diperbarui:** 2026-11-28 19:15 WIB (run 2026-11-28T1908 ditutup)
 **Fase aktif:** 1 — Platform Inti · **Mode:** active
-**Batas pemakaian:** berhenti bila mingguan ≥ 65% Sen–Jum; Sab–Min WIB s.d. 100% (keputusan PO 25 Nov). Terakhir: mingguan 93% (28 Nov 15:23 WIB); reset Sen 30 Nov 07:00 WIB.
+**Batas pemakaian:** berhenti bila mingguan ≥ 65% Sen–Jum; Sab–Min WIB s.d. 100% (keputusan PO 25 Nov). Terakhir: mingguan 94% (28 Nov 19:12 WIB); reset Sen 30 Nov 07:00 WIB.
 
 ## Selesai
 - Fase 0 lengkap (PRD v0.3, monorepo, CI, agent ops, ADR 0001–0003, runner + jadwal).
@@ -26,6 +26,7 @@
   `infra/sql/app_runtime.sql` kini menjaga tenants read-only saat dijalankan ulang.
 - #10 bagian B (PR #51): migrasi `0002` jobs (RLS, `app_runtime` tanpa DELETE), `PostgresJobQueue/Runner` (SKIP LOCKED,
   lease, handler dalam tenant_context, backoff, `last_error` teredaksi), channel realtime `t/<tenant>/…`. #10 ditutup.
+- #47 sebagian (PR #52): redaksi kutip/telepon, larangan `session.query`, audit posisi FK, flush sebelum savepoint.
 - #10 bagian A (PR #45): ports `ObjectStorage`/`Mailer`/`JobQueue`/`Realtime`/`PdfRenderer` + adapter dev/in-memory,
   pemilihan via env, key allowlist + kepemilikan tenant, signed URL kanonik; produksi menolak adapter dev saat dipakai. ADR 0005.
 
