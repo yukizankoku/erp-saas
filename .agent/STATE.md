@@ -2,9 +2,9 @@
 
 > Diperbarui setiap checkpoint oleh PM Agent. Maks. 150 baris; ganti isi lama, jangan menumpuk riwayat.
 
-**Diperbarui:** 2026-11-28 05:30 WIB (run 2026-11-28T0509 ditutup)
+**Diperbarui:** 2026-11-28 10:25 WIB (run 2026-11-28T1009 ditutup)
 **Fase aktif:** 1 — Platform Inti · **Mode:** active
-**Batas pemakaian:** berhenti bila mingguan ≥ 65% Sen–Jum; Sab–Min WIB s.d. 100% (keputusan PO 25 Nov). Terakhir: mingguan 86% (28 Nov 05:27 WIB); reset Sen 30 Nov 07:00 WIB.
+**Batas pemakaian:** berhenti bila mingguan ≥ 65% Sen–Jum; Sab–Min WIB s.d. 100% (keputusan PO 25 Nov). Terakhir: mingguan 90% (28 Nov 10:20 WIB); reset Sen 30 Nov 07:00 WIB.
 
 ## Selesai
 - Fase 0 lengkap (PRD v0.3, monorepo, CI, agent ops, ADR 0001–0003, runner + jadwal).
@@ -21,17 +21,21 @@
 - #37 P1-01e FK komposit (PR #48): UNIQUE (tenant_id, id) otomatis, `tenant_fk()`, 23503 → 422 `record.reference_invalid`
   tanpa oracle, meta-test FK. ADR 0004 §4a/§7a.
 - RLS produksi aktif: Vercel memakai `APP_DATABASE_URL` role `app_runtime` (PO, 28 Nov).
+- #3 bagian A (PR #49): migrasi pertama `0001` — tenants (global, `app_runtime` SELECT saja), companies/branches/
+  warehouses (BaseRecord + RLS, FK komposit, gudang–cabang satu company via FK 3 kolom), service + validasi.
+  `infra/sql/app_runtime.sql` kini menjaga tenants read-only saat dijalankan ulang.
 - #10 bagian A (PR #45): ports `ObjectStorage`/`Mailer`/`JobQueue`/`Realtime`/`PdfRenderer` + adapter dev/in-memory,
   pemilihan via env, key allowlist + kepemilikan tenant, signed URL kanonik; produksi menolak adapter dev saat dipakai. ADR 0005.
 
 ## Berikutnya (urutan)
-1. #3 P1-02 Tenant/company/branch/warehouse — dependensi #36 & #37 sudah selesai; tabel bisnis pertama (pakai
-   `BaseRecord`, `tenant_fk`, `enable_tenant_rls()`), jalur sensitif.
+1. #4 P1-03 Autentikasi (login, token, sesi) → prasyarat #3 bagian B (API org + konteks company aktif, catatan di #3).
 2. #10 bagian B: job queue Postgres (tenant_id per job, handler dalam tenant_context, redaksi last_error), realtime per tenant.
-3. #18 P1-17 i18n/zona waktu/mata uang (bergantung #3) → #19 P1-18 design system.
+3. #18 P1-17 i18n/zona waktu/mata uang → #19 P1-18 design system.
 4. #47 (p3) celah lapis 1 tersisa + follow-up review.
 
 ## Menunggu PO
+- #50 enkripsi NPWP company (Opsi A/B/C) — sebelum API org (#3 bagian B) di-merge.
+- Setelah migrasi `0001` dijalankan di Neon produksi: jalankan ulang workflow `db-provision-roles`.
 - GitHub Environment `db-production`: pastikan *Required reviewers* aktif.
 - Pengaturan repo: default branch `main`, hapus head branch otomatis, proteksi `main`.
 
