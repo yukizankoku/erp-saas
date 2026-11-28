@@ -52,6 +52,26 @@ _MESSAGES: dict[str, dict[str, tuple[str, str]]] = {
             "The referenced record was not found. Check the fields that refer to other records.",
         ),
     },
+    "org.code_conflict": {
+        "id": (
+            "Kode sudah dipakai",
+            "Kode ini sudah digunakan oleh data lain. Gunakan kode berbeda.",
+        ),
+        "en": (
+            "Code already in use",
+            "This code is already used by another record. Use another code.",
+        ),
+    },
+    "org.in_use": {
+        "id": (
+            "Data masih dipakai",
+            "Data tidak dapat dihapus karena masih memiliki cabang atau gudang aktif.",
+        ),
+        "en": (
+            "Record still in use",
+            "The record cannot be deleted because it still has active branches or warehouses.",
+        ),
+    },
 }
 
 
@@ -93,6 +113,20 @@ class RecordReferenceInvalid(RecordError):
 
     code = "record.reference_invalid"
     status_code = 422
+
+
+class CodeConflict(RecordError):
+    """Kode unik (per tenant / company) sudah dipakai record aktif lain."""
+
+    code = "org.code_conflict"
+    status_code = 409
+
+
+class RecordInUse(RecordError):
+    """Record induk tidak boleh dihapus selama masih punya anak aktif."""
+
+    code = "org.in_use"
+    status_code = 409
 
 
 def preferred_language(accept_language: str | None) -> str:
@@ -140,3 +174,5 @@ def register_record_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(VersionConflict, _record_error_handler)
     app.add_exception_handler(RecordConflict, _record_error_handler)
     app.add_exception_handler(RecordReferenceInvalid, _record_error_handler)
+    app.add_exception_handler(CodeConflict, _record_error_handler)
+    app.add_exception_handler(RecordInUse, _record_error_handler)
