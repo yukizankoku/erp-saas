@@ -59,6 +59,8 @@ fitur lampiran).
   - `last_error` = `NamaKelas: pesan` dengan email/Bearer/`token=...`/string panjang disamarkan, maks 500 karakter.
   - Batas: enqueue memakai transaksi sendiri (belum outbox dalam transaksi bisnis); pemicu terjadwal (cron) belum ada;
     handler wajib idempoten (minimal sekali).
+  - Handler wajib idempoten: pengiriman minimal-sekali, dan eksekusi bisa bersamaan lewat lease (heartbeat = tindak lanjut).
+  - Lease dihitung dengan jam Python (bukan jam DB); `worker_id` wajib unik per proses; `max_attempts` maks 25.
 - **Realtime:** `tenant_channel(name)` -> `t/<tenant_id>/<name>`; `publish`/`poll` menolak channel di luar tenant konteks
   (memakai `assert_tenant_owned`, fail-closed tanpa konteks).
 - Adapter in-memory tidak berbagi state antar proses/instance serverless; hanya untuk dev/test.

@@ -85,22 +85,35 @@ class Job(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+MAX_ATTEMPTS_LIMIT = 25
+_MAX_ERROR_INPUT = 2048  # batasi input regex (anti ReDoS/CPU kuadratik)
+_NOT_ALNUM = r"(?<![A-Za-z0-9])"
+_SECRET_WORDS = r"(?:password|passwd|pwd|secret|token|api[_-]?key|authorization)"  # noqa: S105
+
 _REDACTIONS = (
-    (re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), "[email]"),
-    (re.compile(r"(?i)\b(bearer|basic)\s+\S+"), r"\1 [redacted]"),
+    (re.compile(r"\[(?:SQL|parameters):.*", re.S), ""),  # buang detail SQL/parameter SQLAlchemy
+    (
+        re.compile(r"([A-Za-z][A-Za-z0-9+.-]{0,20}://)[^\s/@]{1,100}@"),
+        r"\1[dsn]@",
+    ),  # scheme://user:pass@
+    (re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){0,8}"), "[email]"),
     (
         re.compile(
-            r"(?i)\b(password|passwd|secret|token|api[_-]?key|authorization)(\s*[=:]\s*)\S+"
+            rf"(?i)({_NOT_ALNUM}[\w-]{{0,32}}{_SECRET_WORDS}[\w-]{{0,16}})"
+            r"""(["']?\s{0,5}(?:[=:]|\bis\b)\s{0,5}["']?)(?:(?:bearer|basic|token)\s{1,5})?[^\s"',;}]{1,200}"""
         ),
         r"\1\2[redacted]",
     ),
+    (re.compile(rf"(?i){_NOT_ALNUM}(bearer|basic)\s{{1,5}}\S{{1,200}}"), r"\1 [redacted]"),
+    (re.compile(r"(?<!\d)\d{16}(?!\d)"), "[nik]"),
+    (re.compile(r"(?<![\w])(?:\+62|62|0)8\d[\d\s-]{6,13}\d(?!\d)"), "[phone]"),
     (re.compile(r"[A-Za-z0-9_\-+/=.]{24,}"), "[redacted]"),  # token/kunci panjang
 )
 
 
 def redact_error(exc: BaseException) -> str:
-    """`NamaKelas: pesan` tanpa email/token, dipotong ke 500 karakter."""
-    message = str(exc)
+    """`NamaKelas: pesan` tanpa email/token/PII, dipotong ke 500 karakter."""
+    message = str(exc)[:_MAX_ERROR_INPUT]
     for pattern, repl in _REDACTIONS:
         message = pattern.sub(repl, message)
     return f"{type(exc).__name__}: {message}"[:MAX_ERROR_LENGTH]
@@ -127,6 +140,8 @@ class PostgresJobQueue:
         """Simpan job untuk tenant konteks. Kunci idempotensi sama -> kembalikan id yang ada."""
         if max_attempts < 1:
             raise ValueError("max_attempts must be >= 1")
+        if max_attempts > MAX_ATTEMPTS_LIMIT:
+            raise ValueError(f"max_attempts must be <= {MAX_ATTEMPTS_LIMIT}")
         tenant_id = require_tenant_id()
         now = self._clock()
         values = {

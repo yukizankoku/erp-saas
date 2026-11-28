@@ -1,6 +1,7 @@
 """PostgresJobQueue/Runner pada skema `alembic upgrade head`, lewat role aplikasi (RLS aktif)."""
 
 import asyncio
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -269,12 +270,52 @@ async def test_last_error_redacted_and_truncated(
     assert "bob" not in err and "abc123" not in err
 
 
-def test_redact_error_patterns() -> None:
-    out = redact_error(
-        RuntimeError("Bearer abc.def password: hunter2 key AKIA" + "Z" * 30 + " a@b.co")
-    )
-    assert out == "RuntimeError: Bearer [redacted] password: [redacted] key [redacted] [email]"
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "Bearer abc.def password: hunter2 key AKIA" + "Z" * 30 + " a@b.co",
+            "Bearer [redacted] password: [redacted] key [redacted] [email]",
+        ),
+        ("{'password': 'hunter2'}", "{'password': '[redacted]'}"),
+        ('{"password": "hunter2"}', '{"password": "[redacted]"}'),
+        ("password is hunter2", "password is [redacted]"),
+        ("client_secret=abc", "client_secret=[redacted]"),
+        ("db postgresql://user:pass@dbhost/x", "db postgresql://[dsn]@dbhost/x"),
+        ("Authorization: Token abc123", "Authorization: [redacted]"),
+        ("nik 3171234567890123 ok", "nik [nik] ok"),
+        ("call +6281234567890 or 081234567890", "call [phone] or [phone]"),
+        ("bad query [SQL: SELECT 1] [parameters: ('x@y.id',)]", "bad query "),
+    ],
+)
+def test_redact_error_patterns(raw: str, expected: str) -> None:
+    out = redact_error(RuntimeError(raw))
+    assert out == f"RuntimeError: {expected}"
+    for leak in ("hunter2", "abc123", "pass@", "3171234567890123", "81234567890"):
+        assert leak not in out
+
+
+def test_redact_error_truncates_to_500() -> None:
     assert len(redact_error(RuntimeError("é" * 900))) == 500
+
+
+@pytest.mark.parametrize(
+    "evil",
+    [
+        "a." * 20000,
+        "a" * 40000,
+        "a@" + "b." * 20000,
+        "password" * 5000,
+        "0" * 40000,
+        "://" * 13000,
+        "x@" * 20000,
+    ],
+)
+def test_redact_error_is_not_quadratic(evil: str) -> None:
+    start = time.perf_counter()
+    out = redact_error(RuntimeError(evil))
+    assert time.perf_counter() - start < 0.05
+    assert len(out) <= 500
 
 
 async def test_enqueue_requires_tenant_context(factory: Factory, jobs_table: None) -> None:

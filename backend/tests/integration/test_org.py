@@ -317,6 +317,23 @@ def _migration_grants_sql() -> str:
     return str(module.GRANTS_SQL)
 
 
+def _jobs_grants_sql() -> str:
+    path = next((_REPO / "backend" / "migrations" / "versions").glob("*_0002_jobs.py"))
+    spec = spec_from_file_location("migration_0002", path)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return str(module.GRANTS_SQL)
+
+
+async def _assert_jobs_privileges(conn: Any) -> None:
+    q = text(f"SELECT has_table_privilege('{_RUNTIME_ROLE}', 'jobs', :p)")
+    for priv in ("SELECT", "INSERT", "UPDATE"):
+        assert await conn.scalar(q, {"p": priv}), priv
+    for priv in ("DELETE", "TRUNCATE"):
+        assert not await conn.scalar(q, {"p": priv}), priv
+
+
 async def test_runtime_role_cannot_write_tenants(
     org_tables: None, admin_engine: AsyncEngine
 ) -> None:
@@ -331,6 +348,8 @@ async def test_runtime_role_cannot_write_tenants(
             )
         )
         await conn.execute(text(_migration_grants_sql()))
+        await conn.execute(text(_jobs_grants_sql()))
+        await _assert_jobs_privileges(conn)
         assert await conn.scalar(check, {"p": "SELECT"})
         assert not await conn.scalar(check, {"p": _WRITE})
         # Skrip provisioning memberi DML ke semua tabel; bloknya wajib mencabut lagi untuk tenants.
@@ -344,5 +363,6 @@ async def test_runtime_role_cannot_write_tenants(
         assert len(blocks) == 2
         for block in blocks:
             await conn.execute(text(block))
+        await _assert_jobs_privileges(conn)
         assert await conn.scalar(check, {"p": "SELECT"})
         assert not await conn.scalar(check, {"p": _WRITE})

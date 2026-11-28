@@ -56,6 +56,10 @@ BEGIN
   IF to_regclass('public.tenants') IS NOT NULL THEN
     REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.tenants FROM app_runtime;
   END IF;
+  -- Antrean job (migrasi 0002): SELECT/INSERT/UPDATE saja; riwayat dipangkas role owner.
+  IF to_regclass('public.jobs') IS NOT NULL THEN
+    REVOKE DELETE, TRUNCATE ON public.jobs FROM app_runtime;
+  END IF;
 END
 $$;
 
@@ -73,6 +77,10 @@ BEGIN
   IF COALESCE(has_table_privilege('app_runtime', to_regclass('public.tenants'),
                                   'INSERT, UPDATE, DELETE, TRUNCATE'), false) THEN
     RAISE EXCEPTION 'app_runtime can still modify public.tenants';
+  END IF;
+  IF COALESCE(has_table_privilege('app_runtime', to_regclass('public.jobs'),
+                                  'DELETE, TRUNCATE'), false) THEN
+    RAISE EXCEPTION 'app_runtime can still DELETE/TRUNCATE public.jobs';
   END IF;
 END
 $$;
