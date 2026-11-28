@@ -3,6 +3,8 @@
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -291,3 +293,56 @@ async def test_company_settings_shallow_merge(factory: Factory, admin_engine: As
             await svc.update_settings(company, {"x": 1}, expected_version=version)
     async with scope(factory, t) as s:
         assert await CompanyService(s).get_settings(company) == merged
+
+
+_RUNTIME_ROLE = "app_runtime"
+_REPO = Path(__file__).resolve().parents[3]
+_WRITE = "INSERT, UPDATE, DELETE, TRUNCATE"
+
+
+def _provision_blocks() -> list[str]:
+    """Blok DO pencabutan & verifikasi dari skrip provisioning (bagian tanpa variabel psql)."""
+    sql = (_REPO / "infra" / "sql" / "app_runtime.sql").read_text()
+    part = sql[sql.index("-- Aplikasi tidak boleh mengubah") : sql.index("-- Password (opsional)")]
+    quote = "$" * 2
+    return [f"DO {quote}{body}{quote}" for body in part.split(quote)[1::2]]
+
+
+def _migration_grants_sql() -> str:
+    path = next((_REPO / "backend" / "migrations" / "versions").glob("*_0001_org_structure.py"))
+    spec = spec_from_file_location("migration_0001", path)
+    assert spec is not None and spec.loader is not None
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return str(module.GRANTS_SQL)
+
+
+async def test_runtime_role_cannot_write_tenants(
+    org_tables: None, admin_engine: AsyncEngine
+) -> None:
+    """Migrasi 0001, lalu skrip provisioning dijalankan ulang → `tenants` tetap SELECT saja."""
+    quote = "$" * 2
+    check = text(f"SELECT has_table_privilege('{_RUNTIME_ROLE}', 'tenants', :p)")
+    async with admin_engine.begin() as conn:
+        await conn.execute(
+            text(
+                f"DO {quote} BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = "
+                f"'{_RUNTIME_ROLE}') THEN CREATE ROLE {_RUNTIME_ROLE} NOLOGIN; END IF; END {quote}"
+            )
+        )
+        await conn.execute(text(_migration_grants_sql()))
+        assert await conn.scalar(check, {"p": "SELECT"})
+        assert not await conn.scalar(check, {"p": _WRITE})
+        # Skrip provisioning memberi DML ke semua tabel; bloknya wajib mencabut lagi untuk tenants.
+        await conn.execute(
+            text(
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public "
+                f"TO {_RUNTIME_ROLE}"
+            )
+        )
+        blocks = _provision_blocks()
+        assert len(blocks) == 2
+        for block in blocks:
+            await conn.execute(text(block))
+        assert await conn.scalar(check, {"p": "SELECT"})
+        assert not await conn.scalar(check, {"p": _WRITE})

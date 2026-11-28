@@ -2,9 +2,10 @@
 
 import re
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, ClassVar, Literal, Self
 from uuid import UUID
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import available_timezones
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -22,14 +23,27 @@ def normalize_npwp(value: str | None) -> str | None:
     return digits
 
 
+# Kunci yang ada di basis data zona host tetapi bukan zona IANA yang bermakna untuk company/branch.
+_HOST_ONLY_ZONES = frozenset({"localtime", "posixrules", "Factory"})
+_HOST_ONLY_PREFIXES = ("posix/", "right/")
+
+
+@lru_cache(maxsize=1)
+def _iana_zones() -> frozenset[str]:
+    return frozenset(
+        z
+        for z in available_timezones()
+        if z not in _HOST_ONLY_ZONES and not z.startswith(_HOST_ONLY_PREFIXES)
+    )
+
+
 def validate_timezone(value: str | None) -> str | None:
-    """Nama zona IANA yang dikenal `zoneinfo`."""
+    """Nama zona IANA dari `zoneinfo.available_timezones()`, tanpa kunci lokal host
+    (`localtime`, `posixrules`, `Factory`, `posix/…`, `right/…`)."""
     if value is None:
         return None
-    try:
-        ZoneInfo(value)
-    except (ZoneInfoNotFoundError, ValueError, OSError):
-        raise ValueError(f"unknown IANA timezone: {value!r}") from None
+    if len(value) > 64 or value not in _iana_zones():
+        raise ValueError(f"unknown IANA timezone: {value[:64]!r}")
     return value
 
 

@@ -45,11 +45,16 @@ ALTER DEFAULT PRIVILEGES FOR ROLE :"owner" IN SCHEMA public
 ALTER DEFAULT PRIVILEGES FOR ROLE :"owner" IN SCHEMA public
   GRANT USAGE, SELECT ON SEQUENCES TO app_runtime;
 
--- Aplikasi tidak boleh mengubah status migrasi.
+-- Aplikasi tidak boleh mengubah status migrasi, juga tabel global `tenants` (tanpa RLS; ditulis hanya oleh
+-- kode platform dengan role owner — migrasi 0001). GRANT ... ON ALL TABLES di atas memberi ulang hak tulis,
+-- jadi dicabut lagi di sini setiap kali skrip dijalankan.
 DO $$
 BEGIN
   IF to_regclass('public.alembic_version') IS NOT NULL THEN
-    REVOKE INSERT, UPDATE, DELETE ON public.alembic_version FROM app_runtime;
+    REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.alembic_version FROM app_runtime;
+  END IF;
+  IF to_regclass('public.tenants') IS NOT NULL THEN
+    REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.tenants FROM app_runtime;
   END IF;
 END
 $$;
@@ -64,6 +69,10 @@ BEGIN
   IF COALESCE(has_table_privilege('app_runtime', to_regclass('public.alembic_version'),
                                   'INSERT, UPDATE, DELETE, TRUNCATE'), false) THEN
     RAISE EXCEPTION 'app_runtime can still modify public.alembic_version';
+  END IF;
+  IF COALESCE(has_table_privilege('app_runtime', to_regclass('public.tenants'),
+                                  'INSERT, UPDATE, DELETE, TRUNCATE'), false) THEN
+    RAISE EXCEPTION 'app_runtime can still modify public.tenants';
   END IF;
 END
 $$;

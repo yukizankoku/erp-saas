@@ -38,7 +38,16 @@ def test_npwp_rejected(raw: str) -> None:
 
 def test_timezone_validation() -> None:
     assert validate_timezone("Asia/Jakarta") == "Asia/Jakarta"
-    for bad in ("Mars/Olympus", "", "../etc/passwd", "Asia"):
+    for bad in (
+        "Mars/Olympus",
+        "",
+        "../etc/passwd",
+        "Asia",
+        "posixrules",
+        "localtime",
+        "Factory",
+        "A" * 65,
+    ):
         with pytest.raises(ValueError, match="timezone"):
             validate_timezone(bad)
 
