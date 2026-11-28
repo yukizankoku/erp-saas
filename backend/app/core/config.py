@@ -51,8 +51,9 @@ class Settings(BaseSettings):
     # Ports & adapters (ADR 0005). Nilai tak dikenal ditolak saat provider dibangun.
     storage_backend: str = "local"  # local | memory
     mailer_backend: str = "console"  # console | memory
-    jobqueue_backend: str = "memory"  # memory
+    jobqueue_backend: str = "memory"  # memory | postgres
     realtime_backend: str = "memory"  # memory
+    job_lease_seconds: int = 900  # job `running` lebih lama dari ini dapat diambil ulang
     storage_local_root: str = ".data/storage"
     # Rahasia penanda-tangan URL lokal. Kosong = acak per proses (URL tak valid setelah restart).
     storage_signing_secret: str | None = None

@@ -43,9 +43,24 @@ fitur lampiran).
 ## Konsekuensi
 - Adapter vendor (Vercel Blob/R2, penyedia email transaksional) **hanya setelah persetujuan PO** (layanan pihak
   ketiga menerima data pelanggan + biaya/secret baru) — issue `needs-po` terpisah.
-- **Bagian B:** job queue berbasis tabel Postgres (+ migrasi, RLS, pemicu terjadwal); antarmuka tidak berubah.
-- **Bagian B (catatan keamanan):** `tenant_id` disimpan per job dan handler dibungkus `tenant_context`; redaksi
-  `last_error`; channel realtime terikat tenant.
+- **Bagian B (selesai):** `JOBQUEUE_BACKEND=postgres` = tabel `jobs` (migrasi 0002; adapter `app/core/adapters/pg_jobs.py`).
+  Aman di staging/production; backend memory tetap ditolak. `REALTIME_BACKEND` hanya memory.
+  - Tabel sistem ber-`tenant_id` (bukan `BaseRecord`, tanpa soft delete), RLS FORCE; `app_runtime` hanya SELECT/INSERT/UPDATE
+    (tanpa DELETE). Status string + CHECK; indeks `(status, run_at)` dan `(tenant_id, status, run_at)`; unik parsial
+    `(tenant_id, name, idempotency_key)` -> `enqueue` idempoten (mengembalikan id yang ada).
+  - **Runner per tenant dengan role aplikasi** (bukan koneksi owner/BYPASSRLS): `run_pending()` bekerja untuk tenant konteks;
+    `run_tenants(ids)` mengulang per tenant dengan `tenant_context` + transaksi sendiri. Daftar tenant disediakan
+    pemanggil (mis. dari `tenants`, yang bisa dibaca role aplikasi). Dipilih agar tidak ada jalur yang melewati RLS;
+    biayanya satu query klaim per tenant per putaran.
+  - Klaim: `SELECT ... FOR UPDATE SKIP LOCKED` (job `pending` jatuh tempo atau `running` dengan lease habis,
+    `JOB_LEASE_SECONDS`, default 900) -> `running`, `attempts += 1`, commit; handler jalan di luar transaksi klaim;
+    transaksi terpisah menandai `succeeded` / `pending` + backoff / `failed`. Worker yang telat (lease sudah diambil
+    worker lain) tidak menimpa hasil. Lease habis pada percobaan terakhir -> `failed`.
+  - `last_error` = `NamaKelas: pesan` dengan email/Bearer/`token=...`/string panjang disamarkan, maks 500 karakter.
+  - Batas: enqueue memakai transaksi sendiri (belum outbox dalam transaksi bisnis); pemicu terjadwal (cron) belum ada;
+    handler wajib idempoten (minimal sekali).
+- **Realtime:** `tenant_channel(name)` -> `t/<tenant_id>/<name>`; `publish`/`poll` menolak channel di luar tenant konteks
+  (memakai `assert_tenant_owned`, fail-closed tanpa konteks).
 - Adapter in-memory tidak berbagi state antar proses/instance serverless; hanya untuk dev/test.
 
 ## Alternatif

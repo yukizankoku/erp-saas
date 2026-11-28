@@ -28,6 +28,7 @@ class Job:
     status: str = PENDING
     attempts: int = 0
     last_error: str | None = None
+    idempotency_key: str | None = None
 
 
 class MemoryJobQueue:
@@ -47,10 +48,16 @@ class MemoryJobQueue:
         *,
         run_at: datetime | None = None,
         max_attempts: int = 5,
+        idempotency_key: str | None = None,
     ) -> str:
         if max_attempts < 1:
             raise ValueError("max_attempts must be >= 1")
+        if idempotency_key is not None:
+            for existing in self.jobs.values():
+                if existing.name == name and existing.idempotency_key == idempotency_key:
+                    return existing.id
         job = Job(str(uuid4()), name, dict(payload), run_at or self._clock(), max_attempts)
+        job.idempotency_key = idempotency_key
         self.jobs[job.id] = job
         return job.id
 
